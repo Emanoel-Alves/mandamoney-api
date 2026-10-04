@@ -36,16 +36,20 @@ test("accepts an unset legacy login pepper and rejects short secrets", () => {
   assert.throws(() => parseConfig({ LEGACY_AUTH_PEPPER: "too-short" }));
 });
 
-test("allows HTTPS providers and localhost HTTP only", () => {
-  assert.equal(
-    parseConfig({ OCR_PROVIDER_URL: "http://127.0.0.1:8000/ocr" })
-      .ocrProviderUrl,
-    "http://127.0.0.1:8000/ocr",
-  );
-  assert.throws(
-    () => parseConfig({ OCR_PROVIDER_URL: "http://provider.example/ocr" }),
-    /HTTPS/,
-  );
+test("configures Gemini credentials and restricts the model name", () => {
+  const config = parseConfig({
+    GEMINI_API_KEY: "gemini-test-key",
+    GEMINI_MODEL: "gemini-3.6-flash",
+    GEMINI_FALLBACK_MODEL: "gemini-2.5-flash",
+  });
+  assert.equal(config.geminiApiKey, "gemini-test-key");
+  assert.equal(config.geminiModel, "gemini-3.6-flash");
+  assert.equal(config.geminiFallbackModel, "gemini-2.5-flash");
+  assert.equal(parseConfig({ GEMINI_API_KEY: "  " }).geminiApiKey, undefined);
+  assert.throws(() => parseConfig({ GEMINI_MODEL: "../other-model" }));
+});
+
+test("accepts only HTTPS remote NFC-e providers", () => {
   assert.throws(
     () =>
       parseConfig({

@@ -18,8 +18,12 @@ services:
         value: mandamoney_test
       - key: LEGACY_AUTH_PEPPER
         sync: false
-      - key: OCR_PROVIDER_URL
+      - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.6-flash
+      - key: GEMINI_FALLBACK_MODEL
+        value: gemini-2.5-flash
       - key: ALLOW_TEST_SEED
         value: "true"
       - key: CORS_ORIGINS

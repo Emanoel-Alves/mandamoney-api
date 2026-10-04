@@ -101,9 +101,15 @@ states are reported as unsupported. The API posts only the validated QR
 parameters to the fixed SEFAZ endpoint, parses the returned receipt data, and
 does not need an Apps Script URL. The Ceará endpoint currently requires HTTP,
 so the QR payload is not encrypted in transit to that government host.
-Receipt-photo OCR continues to use the server-side `OCR_PROVIDER_URL`; its URL
-is server-only, requires HTTPS except on localhost, and provider errors are
-sanitized.
+Receipt photos are submitted by the authenticated API directly to Gemini
+using the server-side `GEMINI_API_KEY`; the browser never receives the key.
+The default model is `gemini-3.6-flash`, with `gemini-2.5-flash` as a fallback;
+both can be changed with `GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL`. The API
+validates and normalizes extracted products, discards raw model text, retries
+rate-limit/transient responses, and tries the fallback model if the primary
+model fails or cannot identify valid items. Configure a Gemini API key
+separately on each API deployment. Receipt images are sent to Google's Gemini
+API for processing.
 
 Every multi-document finance write uses MongoDB transactions. The selected
 Atlas deployment must support transactions (a replica set/sharded cluster);

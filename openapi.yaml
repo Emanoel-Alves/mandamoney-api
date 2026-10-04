@@ -369,7 +369,7 @@ paths:
         "504": { $ref: "#/components/responses/GatewayTimeout" }
   /imports/receipt/ocr:
     post:
-      summary: Extract items from a receipt image through the configured OCR provider
+      summary: Extract receipt items directly through Gemini
       requestBody:
         required: true
         content:
@@ -383,6 +383,11 @@ paths:
                   { type: string, enum: [image/jpeg, image/png, image/webp] }
       responses:
         "200": { description: Parsed receipt data. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
   /health/live:
     get:
       security: []
@@ -580,12 +585,17 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     BadGateway:
-      description: SEFAZ or OCR provider returned an invalid response or is unavailable.
+      description: SEFAZ or Gemini returned an invalid response or is unavailable.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnprocessableEntity:
+      description: OCR could not recognize any valid products and prices from the receipt.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     GatewayTimeout:
-      description: SEFAZ or OCR provider did not respond in time.
+      description: SEFAZ or Gemini did not respond in time.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

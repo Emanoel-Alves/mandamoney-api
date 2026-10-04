@@ -1,64 +1,192 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createServer, type Server } from "node:http";
 import test from "node:test";
 import { AuthService } from "./auth.js";
 import { buildApp } from "./app.js";
 import { parseConfig } from "./config.js";
 import { ProviderError, ReceiptImportService } from "./integrations.js";
 
-async function startProvider(
-  handler: (body: unknown) => { status: number; body: unknown },
-): Promise<{ server: Server; url: string }> {
-  const server = createServer((request, response) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk: string) => {
-      body += chunk;
-    });
-    request.on("end", () => {
-      const result = handler(JSON.parse(body));
-      response.writeHead(result.status, { "content-type": "application/json" });
-      response.end(JSON.stringify(result.body));
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("Provider did not bind a TCP port.");
-  return { server, url: `http://127.0.0.1:${address.port}/parse` };
-}
+test("sends receipt image to Gemini and normalizes its JSON response", async () => {
+  const requests: {
+    url: string;
+    headers: Headers;
+    body: Record<string, unknown>;
+  }[] = [];
+  const service = new ReceiptImportService(
+    parseConfig({
+      GEMINI_API_KEY: "server-only-test-key",
+      GEMINI_MODEL: "gemini-3.6-flash",
+      GEMINI_FALLBACK_MODEL: "gemini-2.5-flash",
+    }),
+    async (input, init) => {
+      requests.push({
+        url: String(input),
+        headers: new Headers(init?.headers),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      items: [
+                        { product: " Arroz ", value: 12.5 },
+                        { product: "", value: 5 },
+                        { product: "Preço inválido", value: "N/A" },
+                      ],
+                      market: "Mercado Teste",
+                      date: "04/10/2026",
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+    },
+  );
 
-async function stopProvider(server: Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
+  assert.deepEqual(await service.readReceipt("YWJj", "image/jpeg"), {
+    success: true,
+    market: "Mercado Teste",
+    date: "04/10/2026",
+    items: [{ product: "Arroz", value: 12.5 }],
   });
-}
-
-test("proxies receipt OCR requests to the configured provider", async () => {
-  const received: unknown[] = [];
-  const provider = await startProvider((body) => {
-    received.push(body);
-    return { status: 200, body: { success: true, items: [] } };
+  assert.equal(
+    requests[0]?.url,
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+  );
+  assert.equal(
+    requests[0]?.headers.get("x-goog-api-key"),
+    "server-only-test-key",
+  );
+  assert.deepEqual(requests[0]?.body.generationConfig, {
+    temperature: 0.1,
+    responseMimeType: "application/json",
   });
-  const config = parseConfig({
-    OCR_PROVIDER_URL: provider.url,
+  const contents = requests[0]?.body.contents;
+  assert.ok(Array.isArray(contents));
+  const parts = (contents[0] as Record<string, unknown>).parts;
+  assert.ok(Array.isArray(parts));
+  assert.match(
+    (parts[0] as Record<string, unknown>).text as string,
+    /extraia todos os produtos/,
+  );
+  assert.deepEqual(parts[1], {
+    inline_data: { mime_type: "image/jpeg", data: "YWJj" },
   });
-  const service = new ReceiptImportService(config);
-  try {
-    assert.deepEqual(await service.readReceipt("YWJj", "image/jpeg"), {
-      success: true,
-      items: [],
-    });
-    assert.deepEqual(received, [
-      { imageBase64: "YWJj", mimeType: "image/jpeg" },
-    ]);
-  } finally {
-    await stopProvider(provider.server);
-  }
 });
 
-test("fails explicitly when OCR is not configured", async () => {
+test("falls back to Gemini 2.5 Flash when the primary model fails", async () => {
+  const requestedModels: string[] = [];
+  const service = new ReceiptImportService(
+    parseConfig({
+      GEMINI_API_KEY: "server-only-test-key",
+      GEMINI_MODEL: "gemini-3.6-flash",
+      GEMINI_FALLBACK_MODEL: "gemini-2.5-flash",
+    }),
+    async (input) => {
+      requestedModels.push(String(input));
+      if (requestedModels.length === 1) {
+        return new Response("unavailable", { status: 500 });
+      }
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      items: [{ product: "Leite", value: 6.25 }],
+                      market: "Mercado",
+                      date: "04/10/2026",
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+    },
+  );
+
+  assert.deepEqual(await service.readReceipt("YWJj", "image/jpeg"), {
+    success: true,
+    market: "Mercado",
+    date: "04/10/2026",
+    items: [{ product: "Leite", value: 6.25 }],
+  });
+  assert.deepEqual(
+    requestedModels.map((url) => new URL(url).pathname),
+    [
+      "/v1beta/models/gemini-3.6-flash:generateContent",
+      "/v1beta/models/gemini-2.5-flash:generateContent",
+    ],
+  );
+});
+
+test("reports when Gemini cannot identify products", async () => {
+  const service = new ReceiptImportService(
+    parseConfig({ GEMINI_API_KEY: "server-only-test-key" }),
+    async () =>
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: '{"items":[],"market":"","date":""}' }],
+              },
+            },
+          ],
+        }),
+      ),
+  );
+
+  await assert.rejects(
+    service.readReceipt("YWJj", "image/jpeg"),
+    (error: unknown) =>
+      error instanceof ProviderError &&
+      error.statusCode === 422 &&
+      error.code === "OCR_NO_ITEMS",
+  );
+});
+
+test("retries Gemini rate limits and does not expose provider errors", async () => {
+  const statuses: number[] = [];
+  const delays: number[] = [];
+  const service = new ReceiptImportService(
+    parseConfig({ GEMINI_API_KEY: "server-only-test-key" }),
+    async () => {
+      const status = [429, 503, 500, 500][statuses.length] ?? 500;
+      statuses.push(status);
+      return new Response(
+        JSON.stringify({ error: { message: "private provider response" } }),
+        { status },
+      );
+    },
+    async (milliseconds) => {
+      delays.push(milliseconds);
+    },
+  );
+
+  await assert.rejects(
+    service.readReceipt("YWJj", "image/jpeg"),
+    (error: unknown) =>
+      error instanceof ProviderError &&
+      error.statusCode === 502 &&
+      !error.message.includes("private provider response"),
+  );
+  assert.deepEqual(statuses, [429, 503, 500, 500]);
+  assert.deepEqual(delays, [1_500, 3_000]);
+});
+
+test("requires a Gemini API key for receipt OCR", async () => {
   const service = new ReceiptImportService(parseConfig({}));
   await assert.rejects(
     service.readReceipt("YWJj", "image/png"),
@@ -202,42 +330,40 @@ test("reports SEFAZ errors and unexpected NFC-e payloads without leaking upstrea
 
 test("rejects malformed and oversized image payloads before forwarding", async () => {
   const service = new ReceiptImportService(
-    parseConfig({ OCR_PROVIDER_URL: "http://127.0.0.1:8000/ocr" }),
+    parseConfig({ GEMINI_API_KEY: "server-only-test-key" }),
   );
   await assert.rejects(
     service.readReceipt("not base64", "image/png"),
     (error: unknown) =>
-      error instanceof ProviderError && error.code === "INVALID_IMAGE",
+      error instanceof ProviderError &&
+      error.statusCode === 400 &&
+      error.code === "INVALID_IMAGE",
   );
   await assert.rejects(
     service.readReceipt("A".repeat(700_004), "image/png"),
     (error: unknown) =>
-      error instanceof ProviderError && error.code === "INVALID_IMAGE",
+      error instanceof ProviderError &&
+      error.statusCode === 400 &&
+      error.code === "INVALID_IMAGE",
   );
 });
 
-test("does not expose upstream failure bodies or accept insecure remote providers", async () => {
-  const provider = await startProvider(() => ({
-    status: 500,
-    body: { privateError: "provider secret" },
-  }));
+test("does not expose Gemini failure response bodies", async () => {
   const service = new ReceiptImportService(
-    parseConfig({ OCR_PROVIDER_URL: provider.url }),
+    parseConfig({ GEMINI_API_KEY: "server-only-test-key" }),
+    async () =>
+      new Response(
+        JSON.stringify({ error: { message: "private provider response" } }),
+        { status: 500 },
+      ),
   );
-  try {
-    await assert.rejects(
-      service.readReceipt("YWJj", "image/webp"),
-      (error: unknown) =>
-        error instanceof ProviderError &&
-        error.statusCode === 502 &&
-        !error.message.includes("provider secret"),
-    );
-  } finally {
-    await stopProvider(provider.server);
-  }
-  assert.throws(
-    () => parseConfig({ OCR_PROVIDER_URL: "http://remote.example/ocr" }),
-    /HTTPS/,
+
+  await assert.rejects(
+    service.readReceipt("YWJj", "image/webp"),
+    (error: unknown) =>
+      error instanceof ProviderError &&
+      error.statusCode === 502 &&
+      !error.message.includes("private provider response"),
   );
 });
 
@@ -268,12 +394,12 @@ test("requires a bearer session before forwarding import requests", async () => 
   const app = await buildApp({
     config: parseConfig({
       NODE_ENV: "test",
-      OCR_PROVIDER_URL: "https://provider.example/ocr",
+      GEMINI_API_KEY: "server-only-test-key",
     }),
     database: { async ping() {} },
     auth,
     imports: new ReceiptImportService(
-      parseConfig({ OCR_PROVIDER_URL: "https://provider.example/ocr" }),
+      parseConfig({ GEMINI_API_KEY: "server-only-test-key" }),
     ),
   });
   try {

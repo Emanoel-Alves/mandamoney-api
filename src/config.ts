@@ -21,10 +21,18 @@ const environmentSchema = z.object({
     (value) => (typeof value === "string" && !value.trim() ? undefined : value),
     z.string().url().optional(),
   ),
-  OCR_PROVIDER_URL: z.preprocess(
+  GEMINI_API_KEY: z.preprocess(
     (value) => (typeof value === "string" && !value.trim() ? undefined : value),
-    z.string().url().optional(),
+    z.string().min(1).optional(),
   ),
+  GEMINI_MODEL: z
+    .string()
+    .regex(/^[a-zA-Z0-9.-]+$/)
+    .default("gemini-3.6-flash"),
+  GEMINI_FALLBACK_MODEL: z
+    .string()
+    .regex(/^[a-zA-Z0-9.-]+$/)
+    .default("gemini-2.5-flash"),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
@@ -40,7 +48,9 @@ export type AppConfig = {
   mongoDatabase: string;
   legacyAuthPepper: string | undefined;
   nfceProviderUrl: string | undefined;
-  ocrProviderUrl: string | undefined;
+  geminiApiKey: string | undefined;
+  geminiModel: string;
+  geminiFallbackModel: string;
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
 };
 
@@ -72,10 +82,7 @@ export function parseConfig(
     }
   }
 
-  for (const providerUrl of [
-    parsed.NFCE_PROVIDER_URL,
-    parsed.OCR_PROVIDER_URL,
-  ]) {
+  for (const providerUrl of [parsed.NFCE_PROVIDER_URL]) {
     if (!providerUrl) continue;
     const url = new URL(providerUrl);
     const isLocalHttp =
@@ -99,7 +106,9 @@ export function parseConfig(
     mongoDatabase: parsed.MONGODB_DATABASE,
     legacyAuthPepper: parsed.LEGACY_AUTH_PEPPER,
     nfceProviderUrl: parsed.NFCE_PROVIDER_URL,
-    ocrProviderUrl: parsed.OCR_PROVIDER_URL,
+    geminiApiKey: parsed.GEMINI_API_KEY,
+    geminiModel: parsed.GEMINI_MODEL,
+    geminiFallbackModel: parsed.GEMINI_FALLBACK_MODEL,
     logLevel: parsed.LOG_LEVEL,
   };
 }
