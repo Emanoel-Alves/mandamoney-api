@@ -148,8 +148,9 @@ function parseSefazCeQrCode(qrCode: string): {
     throw new ProviderError(400, "INVALID_NFCE_QR", "QR Code URL is invalid.");
   }
   if (
-    url.protocol !== "https:" ||
-    url.hostname !== sefazCeQrHost ||
+    !["http:", "https:"].includes(url.protocol) ||
+    (url.hostname !== sefazCeQrHost &&
+      !url.hostname.endsWith(".sefaz.ce.gov.br")) ||
     url.port ||
     url.username ||
     url.password

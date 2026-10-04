@@ -126,6 +126,37 @@ test("looks up Ceará NFC-e directly and parses SEFAZ response data", async () =
   ]);
 });
 
+test("accepts legacy HTTP and official Ceará SEFAZ subdomains in QR URLs", async () => {
+  const service = new ReceiptImportService(
+    parseConfig({}),
+    async () =>
+      new Response(
+        JSON.stringify({
+          xml: `
+          <tr id="Item1">
+            <span class="txtTit">Produto</span>
+            <span class="valor">1,00</span>
+          </tr>`,
+        }),
+      ),
+  );
+  const qrPayload =
+    "p=23260903995515024180650160000264791007017339%7C2%7C1%7C1%7Cc6984da2ec797b30be392ce745ef6d77e221cab3";
+
+  for (const url of [
+    `http://nfce.sefaz.ce.gov.br/consulta?${qrPayload}`,
+    `https://www.sefaz.ce.gov.br/consulta?${qrPayload}`,
+  ]) {
+    const result = await service.readNfce(url);
+    assert.deepEqual(result, {
+      success: true,
+      market: "NFC-e",
+      date: "",
+      items: [{ product: "Produto", value: 1 }],
+    });
+  }
+});
+
 test("rejects unsupported or malformed NFC-e QR codes before making requests", async () => {
   let requestCount = 0;
   const service = new ReceiptImportService(parseConfig({}), async () => {
@@ -135,6 +166,7 @@ test("rejects unsupported or malformed NFC-e QR codes before making requests", a
 
   for (const qrCode of [
     "https://attacker.example/?p=23260903995515024180650160000264791007017339%7C2%7C1%7C1%7Cc6984da2ec797b30be392ce745ef6d77e221cab3",
+    "https://sefaz.sp.gov.br/?p=23260903995515024180650160000264791007017339%7C2%7C1%7C1%7Cc6984da2ec797b30be392ce745ef6d77e221cab3",
     "https://nfce.sefaz.ce.gov.br/?p=35260903995515024180650160000264791007017339%7C2%7C1%7C1%7Cc6984da2ec797b30be392ce745ef6d77e221cab3",
     "not a url",
   ]) {
