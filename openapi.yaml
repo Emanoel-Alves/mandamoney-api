@@ -352,7 +352,7 @@ paths:
                     items: { $ref: "#/components/schemas/Dispute" }
   /imports/nfce/qr:
     post:
-      summary: Parse an NFC-e QR code through the configured server-side integration
+      summary: Look up a Ceará NFC-e QR code directly with SEFAZ
       requestBody:
         required: true
         content:
@@ -364,6 +364,9 @@ paths:
                 qrCode: { type: string, maxLength: 4096 }
       responses:
         "200": { description: Parsed receipt data. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
   /imports/receipt/ocr:
     post:
       summary: Extract items from a receipt image through the configured OCR provider
@@ -573,6 +576,16 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     Unavailable:
       description: Database or dependent service unavailable.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadGateway:
+      description: SEFAZ or OCR provider returned an invalid response or is unavailable.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    GatewayTimeout:
+      description: SEFAZ or OCR provider did not respond in time.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

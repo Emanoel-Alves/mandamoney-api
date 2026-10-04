@@ -94,13 +94,16 @@ Each state-changing finance request requires an `Idempotency-Key` header; the
 same key and request replay the original response for seven days, while reuse
 for another request is rejected.
 
-NFC-e parsing and receipt OCR are temporarily proxied server-to-server to the
-existing Apps Script/OCR providers using `NFCE_PROVIDER_URL` and
-`OCR_PROVIDER_URL`. The Apps Script endpoint must be its deployed `/exec` URL.
-Provider URLs are server-only, require HTTPS except on localhost, and provider
-errors are sanitized. Unconfigured integrations return an explicit 503. The
-local frontend uses this API; production remains on the legacy deployment
-until the staging and cutover checks are completed.
+The NFC-e QR reader decodes the code in the browser and the API directly
+queries the official Ceará SEFAZ NFC-e endpoint. It accepts QR URLs hosted at
+`nfce.sefaz.ce.gov.br` whose access key is for Ceará (state code `23`); other
+states are reported as unsupported. The API posts only the validated QR
+parameters to the fixed SEFAZ endpoint, parses the returned receipt data, and
+does not need an Apps Script URL. The Ceará endpoint currently requires HTTP,
+so the QR payload is not encrypted in transit to that government host.
+Receipt-photo OCR continues to use the server-side `OCR_PROVIDER_URL`; its URL
+is server-only, requires HTTPS except on localhost, and provider errors are
+sanitized.
 
 Every multi-document finance write uses MongoDB transactions. The selected
 Atlas deployment must support transactions (a replica set/sharded cluster);
