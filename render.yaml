@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: mandamoney-api-test
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build && npm run seed:test
+    startCommand: npm start
+    healthCheckPath: /health/ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DATABASE
+        value: mandamoney_test
+      - key: LEGACY_AUTH_PEPPER
+        sync: false
+      - key: NFCE_PROVIDER_URL
+        sync: false
+      - key: OCR_PROVIDER_URL
+        sync: false
+      - key: ALLOW_TEST_SEED
+        value: "true"
+      - key: CORS_ORIGINS
+        value: https://emanoel-alves.github.io
