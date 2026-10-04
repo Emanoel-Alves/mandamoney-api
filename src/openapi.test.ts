@@ -17,7 +17,8 @@ test("OpenAPI contract declares the expected API operations and auth", async () 
   };
 
   assert.equal(spec.openapi, "3.1.0");
-  assert.ok(spec.paths);
+  const paths = spec.paths;
+  assert.ok(paths);
   for (const path of [
     "/auth/login",
     "/auth/me",
@@ -39,11 +40,11 @@ test("OpenAPI contract declares the expected API operations and auth", async () 
     "/imports/nfce/qr",
     "/imports/receipt/ocr",
   ]) {
-    assert.ok(spec.paths[path], `missing API path ${path}`);
+    assert.ok(paths[path], `missing API path ${path}`);
   }
   assert.ok(spec.components?.securitySchemes?.bearerAuth);
-  assert.ok(spec.paths["/balances/{balanceId}/offset"]?.post);
-  assert.ok(spec.paths["/categories"]?.get);
-  assert.ok(spec.paths["/categories"]?.post);
-  assert.ok(spec.paths["/payment-requests/{requestId}/confirm"]?.post);
+  assert.ok(paths["/balances/{balanceId}/offset"]?.post);
+  assert.ok(paths["/categories"]?.get);
+  assert.ok(paths["/categories"]?.post);
+  assert.ok(paths["/payment-requests/{requestId}/confirm"]?.post);
 });
