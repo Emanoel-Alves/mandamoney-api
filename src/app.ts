@@ -19,6 +19,11 @@ import {
   ReceiptImportService,
   registerImportRoutes,
 } from "./integrations.js";
+import {
+  registerShoppingListRoutes,
+  ShoppingListError,
+  type ShoppingListApi,
+} from "./shopping-list.js";
 
 export interface DatabaseHealth {
   ping(): Promise<void>;
@@ -31,6 +36,7 @@ export type AppDependencies = {
   finance?: FinanceApi;
   categories?: CategoryApi;
   imports?: ReceiptImportService;
+  shoppingList?: ShoppingListApi;
 };
 
 export async function buildApp({
@@ -40,6 +46,7 @@ export async function buildApp({
   finance,
   categories,
   imports,
+  shoppingList,
 }: AppDependencies): Promise<FastifyInstance> {
   const app = Fastify({
     bodyLimit: 1_048_576,
@@ -72,7 +79,7 @@ export async function buildApp({
       }
       callback(new Error("Origin is not allowed by CORS."), false);
     },
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["GET", "POST", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
     maxAge: 600,
   });
@@ -89,6 +96,7 @@ export async function buildApp({
   if (finance) registerFinanceRoutes(app, finance, auth);
   if (categories) registerCategoryRoutes(app, categories, auth);
   if (imports) registerImportRoutes(app, imports, auth);
+  if (shoppingList) registerShoppingListRoutes(app, shoppingList, auth);
 
   app.get(
     "/health/live",
@@ -128,6 +136,11 @@ export async function buildApp({
       });
     }
     if (error instanceof FinanceError) {
+      return reply.code(error.statusCode).send({
+        error: { code: error.code, message: error.message },
+      });
+    }
+    if (error instanceof ShoppingListError) {
       return reply.code(error.statusCode).send({
         error: { code: error.code, message: error.message },
       });

@@ -26,7 +26,10 @@ test("OpenAPI contract declares the expected API operations and auth", async () 
     "/bootstrap",
     "/items",
     "/items/batch",
+    "/shopping-list",
+    "/shopping-list/{itemId}",
     "/categories",
+    "/categories/product-mappings",
     "/balances",
     "/household/users",
     "/disputes",
@@ -46,5 +49,10 @@ test("OpenAPI contract declares the expected API operations and auth", async () 
   assert.ok(paths["/balances/{balanceId}/offset"]?.post);
   assert.ok(paths["/categories"]?.get);
   assert.ok(paths["/categories"]?.post);
+  assert.ok(paths["/categories/product-mappings"]?.get);
+  assert.ok(paths["/categories/product-mappings"]?.post);
+  assert.ok(paths["/shopping-list"]?.get);
+  assert.ok(paths["/shopping-list"]?.post);
+  assert.ok(paths["/shopping-list/{itemId}"]?.delete);
   assert.ok(paths["/payment-requests/{requestId}/confirm"]?.post);
 });

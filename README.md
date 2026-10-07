@@ -84,10 +84,21 @@ Implemented finance routes include bootstrap, cursor-paginated item reads,
 idempotent item batches, balances and balance details, payment requests and
 confirmation, dispute submission and resolution, reciprocal offsets, and
 pending notifications. `GET /api/v1/household/users` returns the registered
-members of this single household.
+members of this single household. Items keep the authenticated registrant in
+`buyerId`; the registrant does not have to participate in the split. Other
+participants marked in `paidDirectlyBy` are excluded from resulting balances.
+The authenticated `/api/v1/shopping-list` GET and POST routes manage shared
+household shopping needs; `DELETE /api/v1/shopping-list/{itemId}` removes an
+item after purchase.
 Categories are stored in their own MongoDB collection;
 `GET /api/v1/categories` is public for the current legacy frontend, and
 authenticated users can add a category with `POST /api/v1/categories`.
+Product-to-category associations are stored in `productCategoryMappings`.
+The authenticated `GET /api/v1/categories/product-mappings?products=...`
+looks up known products, and `POST /api/v1/categories/product-mappings`
+persists a user's category selection for future purchases. Product names are
+normalized for matching; no category heuristics are maintained in the
+frontend.
 Categories imported from purchase records retain their display colors.
 All finance and item-import routes require a bearer session.
 Each state-changing finance request requires an `Idempotency-Key` header; the

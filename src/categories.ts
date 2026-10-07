@@ -3,7 +3,11 @@ import type { FastifyInstance } from "fastify";
 import type { AuthService } from "./auth.js";
 import { requireAuthentication } from "./auth.js";
 import type { Database } from "./database.js";
-import { collectionNames, type CategoryDocument } from "./models.js";
+import {
+  collectionNames,
+  type CategoryDocument,
+  type ProductCategoryMappingDocument,
+} from "./models.js";
 
 const categoryColors = [
   "#d96c55",
@@ -25,11 +29,28 @@ const legacyCategoryColors: Record<string, string> = {
   outros: "#a99f92",
 };
 
-export type CategoryApi = Pick<CategoryService, "list" | "create">;
+export type ProductCategoryMapping = {
+  product: string;
+  normalizedProduct: string;
+  categoryId: string;
+  categoryName: string;
+};
+
+export type CategoryApi = Pick<
+  CategoryService,
+  "list" | "create" | "getProductMappings" | "saveProductMapping"
+>;
 
 export interface CategoryStore {
   list(): Promise<CategoryDocument[]>;
   upsert(category: CategoryDocument): Promise<CategoryDocument>;
+  findById(id: string): Promise<CategoryDocument | null>;
+  listProductMappings(
+    normalizedProducts: string[],
+  ): Promise<ProductCategoryMappingDocument[]>;
+  upsertProductMapping(
+    mapping: ProductCategoryMappingDocument,
+  ): Promise<ProductCategoryMappingDocument>;
 }
 
 export class CategoryError extends Error {
@@ -69,6 +90,54 @@ export class MongoCategoryStore implements CategoryStore {
       throw new Error("Category upsert did not return a document.");
     return existing;
   }
+
+  async findById(id: string): Promise<CategoryDocument | null> {
+    const db = await this.database.connect();
+    return db
+      .collection<CategoryDocument>(collectionNames.categories)
+      .findOne({ _id: id });
+  }
+
+  async listProductMappings(
+    normalizedProducts: string[],
+  ): Promise<ProductCategoryMappingDocument[]> {
+    const db = await this.database.connect();
+    return db
+      .collection<ProductCategoryMappingDocument>(
+        collectionNames.productCategoryMappings,
+      )
+      .find({ normalizedProduct: { $in: normalizedProducts } })
+      .toArray();
+  }
+
+  async upsertProductMapping(
+    mapping: ProductCategoryMappingDocument,
+  ): Promise<ProductCategoryMappingDocument> {
+    const db = await this.database.connect();
+    const collection = db.collection<ProductCategoryMappingDocument>(
+      collectionNames.productCategoryMappings,
+    );
+    await collection.updateOne(
+      { _id: mapping._id },
+      {
+        $set: {
+          product: mapping.product,
+          normalizedProduct: mapping.normalizedProduct,
+          categoryId: mapping.categoryId,
+          updatedAt: mapping.updatedAt,
+        },
+        $setOnInsert: { createdAt: mapping.createdAt },
+      },
+      { upsert: true },
+    );
+    const saved = await collection.findOne({ _id: mapping._id });
+    if (!saved) {
+      throw new Error(
+        "Product category mapping upsert did not return a document.",
+      );
+    }
+    return saved;
+  }
 }
 
 export class CategoryService {
@@ -79,6 +148,65 @@ export class CategoryService {
 
   list(): Promise<CategoryDocument[]> {
     return this.store.list();
+  }
+
+  async getProductMappings(
+    products: string[],
+  ): Promise<ProductCategoryMapping[]> {
+    const normalizedProducts = [
+      ...new Set(products.map(normalizeProductName).filter(Boolean)),
+    ];
+    if (normalizedProducts.length === 0) return [];
+
+    const mappings = await this.store.listProductMappings(normalizedProducts);
+    if (mappings.length === 0) return [];
+    const categories = await this.store.list();
+    const categoriesById = new Map(
+      categories.map((category) => [category._id, category]),
+    );
+    return mappings.flatMap((mapping) => {
+      const category = categoriesById.get(mapping.categoryId);
+      return category
+        ? [
+            {
+              product: mapping.product,
+              normalizedProduct: mapping.normalizedProduct,
+              categoryId: category._id,
+              categoryName: category.name,
+            },
+          ]
+        : [];
+    });
+  }
+
+  async saveProductMapping(
+    product: string,
+    categoryId: string,
+  ): Promise<ProductCategoryMapping> {
+    const trimmedProduct = product.trim();
+    const normalizedProduct = normalizeProductName(trimmedProduct);
+    if (!normalizedProduct || trimmedProduct.length > 300) {
+      throw new CategoryError("Product name must contain 1 to 300 characters.");
+    }
+    const category = await this.store.findById(categoryId);
+    if (!category) {
+      throw new CategoryError("Selected category does not exist.");
+    }
+    const now = this.now();
+    const mapping = await this.store.upsertProductMapping({
+      _id: normalizedProduct,
+      product: trimmedProduct,
+      normalizedProduct,
+      categoryId: category._id,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return {
+      product: mapping.product,
+      normalizedProduct: mapping.normalizedProduct,
+      categoryId: category._id,
+      categoryName: category.name,
+    };
   }
 
   async create(name: string): Promise<CategoryDocument> {
@@ -129,6 +257,57 @@ export function registerCategoryRoutes(
     categories: (await categories.list()).map(serializeCategory),
   }));
 
+  app.get<{ Querystring: { products: string[] } }>(
+    "/api/v1/categories/product-mappings",
+    {
+      preHandler: requireAuthentication(auth),
+      schema: {
+        querystring: {
+          type: "object",
+          required: ["products"],
+          additionalProperties: false,
+          properties: {
+            products: {
+              type: "array",
+              minItems: 1,
+              maxItems: 100,
+              items: { type: "string", minLength: 1, maxLength: 300 },
+            },
+          },
+        },
+      },
+    },
+    async (request) => ({
+      mappings: await categories.getProductMappings(request.query.products),
+    }),
+  );
+
+  app.post<{
+    Body: { product: string; categoryId: string };
+  }>(
+    "/api/v1/categories/product-mappings",
+    {
+      preHandler: requireAuthentication(auth),
+      schema: {
+        body: {
+          type: "object",
+          required: ["product", "categoryId"],
+          additionalProperties: false,
+          properties: {
+            product: { type: "string", minLength: 1, maxLength: 300 },
+            categoryId: { type: "string", minLength: 1, maxLength: 100 },
+          },
+        },
+      },
+    },
+    async (request) => ({
+      mapping: await categories.saveProductMapping(
+        request.body.product,
+        request.body.categoryId,
+      ),
+    }),
+  );
+
   app.post<{ Body: { name: string } }>(
     "/api/v1/categories",
     {
@@ -165,6 +344,16 @@ export function normalizeCategoryName(name: string): string {
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
     .replace(/\s+/g, "-");
+}
+
+export function normalizeProductName(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function categoryColor(name: string): string {

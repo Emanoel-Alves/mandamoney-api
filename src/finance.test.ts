@@ -6,6 +6,7 @@ import { buildApp } from "./app.js";
 import { parseConfig } from "./config.js";
 import {
   allocateShares,
+  calculateItemDebts,
   calculateDisputeResult,
   calculateOffset,
   FinanceError,
@@ -149,6 +150,18 @@ test("allocates every cent deterministically across unique participants", () => 
   );
 });
 
+test("excludes the buyer and participants who paid their share directly from debts", () => {
+  assert.deepEqual(calculateItemDebts(2_141, ["yago"], "luiza", ["yago"]), []);
+  assert.deepEqual(calculateItemDebts(2_000, ["yago", "luiza"], "yago", []), [
+    { debtorId: "luiza", shareCents: 1_000 },
+  ]);
+  assert.deepEqual(calculateItemDebts(2_000, ["yago"], "yago", []), []);
+  assert.deepEqual(
+    calculateItemDebts(3_000, ["yago", "luiza", "other"], "yago", ["luiza"]),
+    [{ debtorId: "other", shareCents: 1_000 }],
+  );
+});
+
 test("offsets reciprocal balances by the lesser amount and preserves remainder", () => {
   assert.deepEqual(calculateOffset(12_345, 5_000), {
     amountCents: 5_000,
@@ -216,6 +229,23 @@ test("rejects item writes attributed to a different buyer", () => {
   );
 });
 
+test("allows the buyer to be excluded from participants when another participant paid directly", () => {
+  assert.doesNotThrow(() =>
+    validateNewItem(
+      {
+        date: "2026-10-03",
+        market: "Market",
+        product: "Product",
+        valueCents: 500,
+        buyerId: "authenticated-user",
+        participantIds: ["another-user"],
+        paidDirectlyBy: ["another-user"],
+      },
+      "authenticated-user",
+    ),
+  );
+});
+
 test("protects all finance routes and uses only identity from bearer session", async () => {
   const calls: unknown[][] = [];
   const app = await buildApp({
@@ -269,7 +299,6 @@ test("protects all finance routes and uses only identity from bearer session", a
             market: "Market",
             product: "Product",
             valueCents: 500,
-            buyerId: "another-user",
             participantIds: ["authenticated-user", "another-user"],
             paidDirectlyBy: [],
           },

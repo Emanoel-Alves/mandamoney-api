@@ -6,6 +6,7 @@ import { CategoryService, MongoCategoryStore } from "./categories.js";
 import { ensureIndexes } from "./models.js";
 import { parseConfig, requireMongoUri } from "./config.js";
 import { createDatabase } from "./database.js";
+import { ShoppingListService } from "./shopping-list.js";
 
 const config = parseConfig();
 const database = createDatabase({
@@ -23,6 +24,7 @@ const app = await buildApp({
   finance: new FinanceService(database),
   categories: new CategoryService(new MongoCategoryStore(database)),
   imports: new ReceiptImportService(config),
+  shoppingList: new ShoppingListService(database),
 });
 
 const shutdown = async (signal: string) => {

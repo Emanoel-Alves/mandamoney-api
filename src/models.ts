@@ -24,11 +24,27 @@ export type ItemDocument = {
   createdAt: Date;
 };
 
+export type ShoppingListItemDocument = {
+  _id: string;
+  product: string;
+  addedBy: string;
+  createdAt: Date;
+};
+
 export type CategoryDocument = {
   _id: string;
   name: string;
   normalizedName: string;
   color: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ProductCategoryMappingDocument = {
+  _id: string;
+  product: string;
+  normalizedProduct: string;
+  categoryId: string;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -123,6 +139,8 @@ export const collectionNames = {
   sessions: "sessions",
   idempotencyKeys: "idempotencyKeys",
   categories: "categories",
+  productCategoryMappings: "productCategoryMappings",
+  shoppingListItems: "shoppingListItems",
 } as const;
 
 export const indexes: Record<keyof typeof collectionNames, IndexDescription[]> =
@@ -225,6 +243,18 @@ export const indexes: Record<keyof typeof collectionNames, IndexDescription[]> =
         name: "categories_normalized_name_unique",
       },
       { key: { name: 1 }, name: "categories_name" },
+    ],
+    productCategoryMappings: [
+      {
+        key: { normalizedProduct: 1 },
+        unique: true,
+        name: "product_category_mappings_product_unique",
+      },
+      { key: { categoryId: 1 }, name: "product_category_mappings_category" },
+    ],
+    shoppingListItems: [
+      { key: { createdAt: -1, _id: -1 }, name: "shopping_list_created_desc" },
+      { key: { addedBy: 1, createdAt: -1 }, name: "shopping_list_added_by" },
     ],
   };
 

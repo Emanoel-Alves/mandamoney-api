@@ -40,7 +40,7 @@ type NewItemInput = {
   product: string;
   category?: string;
   valueCents: number;
-  buyerId: string;
+  buyerId?: string;
   participantIds: string[];
   paidDirectlyBy: string[];
 };
@@ -198,16 +198,21 @@ export class FinanceService {
             .collection<ItemDocument>(collectionNames.items)
             .insertOne(item, { session });
           createdItems.push(item);
-          const shares = allocateShares(item.amountCents, item.participantIds);
-          for (const debtorId of item.participantIds) {
-            if (debtorId === userId || item.paidDirectlyBy.includes(debtorId))
-              continue;
-            const shareCents = shares.get(debtorId) ?? 0;
-            if (shareCents <= 0) continue;
+          const debts = calculateItemDebts(
+            item.amountCents,
+            item.participantIds,
+            userId,
+            item.paidDirectlyBy,
+          );
+          for (const { debtorId, shareCents } of debts) {
             const existing = await db
               .collection<BalanceDocument>(collectionNames.balances)
               .findOne(
-                { debtorId, creditorId: userId, status: pendingStatus },
+                {
+                  debtorId,
+                  creditorId: userId,
+                  status: pendingStatus,
+                },
                 { session },
               );
             let balance: BalanceDocument;
@@ -1441,14 +1446,11 @@ export function validateNewItem(item: NewItemInput, userId: string): void {
       "Market and product are required.",
     );
   }
-  if (
-    item.participantIds.length > 20 ||
-    !item.participantIds.includes(userId)
-  ) {
+  if (item.participantIds.length > 20) {
     throw new FinanceError(
       400,
       "INVALID_REQUEST",
-      "Participants must include the authenticated buyer and stay within the supported limit.",
+      "Participants must stay within the supported limit.",
     );
   }
   if (item.paidDirectlyBy.some((id) => !item.participantIds.includes(id))) {
@@ -1483,6 +1485,22 @@ export function allocateShares(
       return [participantId, share];
     }),
   );
+}
+
+export function calculateItemDebts(
+  amountCents: number,
+  participantIds: string[],
+  creditorId: string,
+  paidDirectlyBy: string[],
+): { debtorId: string; shareCents: number }[] {
+  return [...allocateShares(amountCents, participantIds)]
+    .filter(
+      ([participantId, shareCents]) =>
+        participantId !== creditorId &&
+        !paidDirectlyBy.includes(participantId) &&
+        shareCents > 0,
+    )
+    .map(([debtorId, shareCents]) => ({ debtorId, shareCents }));
 }
 
 function serializeItem(item: ItemDocument, names: UserNames = new Map()) {
