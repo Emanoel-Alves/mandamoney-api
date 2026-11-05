@@ -150,15 +150,117 @@ test("allocates every cent deterministically across unique participants", () => 
   );
 });
 
-test("excludes the buyer and participants who paid their share directly from debts", () => {
+test("nets consumer shares against cash contributions", () => {
   assert.deepEqual(calculateItemDebts(2_141, ["yago"], "luiza", ["yago"]), []);
   assert.deepEqual(calculateItemDebts(2_000, ["yago", "luiza"], "yago", []), [
-    { debtorId: "luiza", shareCents: 1_000 },
+    { debtorId: "luiza", creditorId: "yago", shareCents: 1_000 },
   ]);
   assert.deepEqual(calculateItemDebts(2_000, ["yago"], "yago", []), []);
   assert.deepEqual(
     calculateItemDebts(3_000, ["yago", "luiza", "other"], "yago", ["luiza"]),
-    [{ debtorId: "other", shareCents: 1_000 }],
+    [{ debtorId: "other", creditorId: "yago", shareCents: 1_000 }],
+  );
+  assert.deepEqual(
+    calculateItemDebts(
+      1_000,
+      ["luiza"],
+      "yago",
+      [],
+      [
+        { userId: "yago", amountCents: 500 },
+        { userId: "luiza", amountCents: 500 },
+      ],
+    ),
+    [{ debtorId: "luiza", creditorId: "yago", shareCents: 500 }],
+  );
+});
+
+test("validates cash contributions independently from consumers", () => {
+  assert.doesNotThrow(() =>
+    validateNewItem(
+      {
+        date: "2026-10-03",
+        market: "Market",
+        product: "Kiwi",
+        valueCents: 1_000,
+        buyerId: "authenticated-user",
+        participantIds: ["another-user"],
+        paidDirectlyBy: [],
+        cashContributions: [
+          { userId: "authenticated-user", amountCents: 500 },
+          { userId: "another-user", amountCents: 500 },
+        ],
+      },
+      "authenticated-user",
+    ),
+  );
+  assert.throws(
+    () =>
+      validateNewItem(
+        {
+          date: "2026-10-03",
+          market: "Market",
+          product: "Kiwi",
+          valueCents: 1_000,
+          buyerId: "authenticated-user",
+          participantIds: ["another-user"],
+          paidDirectlyBy: [],
+          cashContributions: [
+            { userId: "authenticated-user", amountCents: 400 },
+            { userId: "another-user", amountCents: 500 },
+          ],
+        },
+        "authenticated-user",
+      ),
+    (error: unknown) =>
+      error instanceof FinanceError &&
+      error.statusCode === 400 &&
+      error.code === "INVALID_REQUEST",
+  );
+});
+
+test("allows a direct payer to be excluded from consumers when contributions are explicit", () => {
+  assert.doesNotThrow(() =>
+    validateNewItem(
+      {
+        date: "2026-10-03",
+        market: "Market",
+        product: "Kiwi",
+        valueCents: 1_000,
+        buyerId: "authenticated-user",
+        participantIds: ["another-user"],
+        paidDirectlyBy: ["authenticated-user"],
+        cashContributions: [
+          { userId: "authenticated-user", amountCents: 500 },
+          { userId: "another-user", amountCents: 500 },
+        ],
+      },
+      "authenticated-user",
+    ),
+  );
+});
+
+test("validates optional receipt links and rejects non-HTTP URLs", () => {
+  const validItem = {
+    date: "2026-10-03",
+    market: "Market",
+    product: "Kiwi",
+    valueCents: 1_000,
+    participantIds: ["authenticated-user"],
+    paidDirectlyBy: [],
+    receiptUrl: "https://example.com/receipt?id=123",
+  };
+  assert.doesNotThrow(() => validateNewItem(validItem, "authenticated-user"));
+  assert.throws(
+    () =>
+      validateNewItem(
+        { ...validItem, receiptUrl: "javascript:alert(1)" },
+        "authenticated-user",
+      ),
+    (error: unknown) =>
+      error instanceof FinanceError &&
+      error.statusCode === 400 &&
+      error.code === "INVALID_REQUEST",
   );
 });
 
@@ -299,6 +401,7 @@ test("protects all finance routes and uses only identity from bearer session", a
             market: "Market",
             product: "Product",
             valueCents: 500,
+            receiptUrl: "https://example.com/nfce/123",
             participantIds: ["authenticated-user", "another-user"],
             paidDirectlyBy: [],
           },
@@ -308,6 +411,10 @@ test("protects all finance routes and uses only identity from bearer session", a
     assert.equal(acceptedWrite.statusCode, 201);
     assert.equal(calls.length, 2);
     assert.equal(calls[1]?.[1], "authenticated-user");
+    assert.equal(
+      (calls[1]?.[3] as { receiptUrl?: string }[])[0]?.receiptUrl,
+      "https://example.com/nfce/123",
+    );
   } finally {
     await app.close();
   }

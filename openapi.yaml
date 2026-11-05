@@ -544,6 +544,13 @@ components:
         product: { type: string, minLength: 1, maxLength: 300 }
         category: { type: string, maxLength: 100 }
         valueCents: { type: integer, minimum: 1 }
+        receiptUrl:
+          {
+            type: string,
+            format: uri,
+            maxLength: 2048,
+            description: HTTP or HTTPS link to the source receipt,
+          }
         buyerId:
           {
             type: string,
@@ -558,7 +565,19 @@ components:
         paidDirectlyBy:
           type: array
           uniqueItems: true
+          description: Direct payers; may be outside participantIds when cashContributions is supplied.
           items: { type: string }
+        cashContributions:
+          type: array
+          maxItems: 20
+          description: Optional cash advances by payer; amounts must sum to valueCents.
+          items:
+            type: object
+            required: [userId, amountCents]
+            additionalProperties: false
+            properties:
+              userId: { type: string, minLength: 1, maxLength: 100 }
+              amountCents: { type: integer, minimum: 0 }
     ItemPage:
       type: object
       required: [items, nextCursor]

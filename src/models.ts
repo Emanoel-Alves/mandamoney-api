@@ -19,8 +19,10 @@ export type ItemDocument = {
   product: string;
   category: string;
   amountCents: number;
+  receiptUrl?: string;
   participantIds: string[];
   paidDirectlyBy: string[];
+  cashContributions?: { userId: string; amountCents: number }[];
   createdAt: Date;
 };
 

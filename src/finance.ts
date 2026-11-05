@@ -40,9 +40,11 @@ type NewItemInput = {
   product: string;
   category?: string;
   valueCents: number;
+  receiptUrl?: string;
   buyerId?: string;
   participantIds: string[];
   paidDirectlyBy: string[];
+  cashContributions?: { userId: string; amountCents: number }[];
 };
 
 type FinanceReply = { statusCode: number; body: unknown };
@@ -163,7 +165,14 @@ export class FinanceService {
       items,
       async (db, session) => {
         const userIds = [
-          ...new Set(items.flatMap((item) => item.participantIds)),
+          ...new Set(
+            items.flatMap((item) => [
+              ...item.participantIds,
+              ...(item.cashContributions ?? []).map(
+                (contribution) => contribution.userId,
+              ),
+            ]),
+          ),
         ];
         const foundUsers = await db
           .collection<UserDocument>(collectionNames.users)
@@ -190,8 +199,18 @@ export class FinanceService {
             product: input.product.trim(),
             category: input.category?.trim() ?? "",
             amountCents: input.valueCents,
+            ...(input.receiptUrl
+              ? { receiptUrl: input.receiptUrl.trim() }
+              : {}),
             participantIds: [...input.participantIds],
             paidDirectlyBy: [...input.paidDirectlyBy],
+            ...(input.cashContributions
+              ? {
+                  cashContributions: input.cashContributions.map(
+                    (contribution) => ({ ...contribution }),
+                  ),
+                }
+              : {}),
             createdAt: this.now(),
           };
           await db
@@ -203,14 +222,15 @@ export class FinanceService {
             item.participantIds,
             userId,
             item.paidDirectlyBy,
+            item.cashContributions,
           );
-          for (const { debtorId, shareCents } of debts) {
+          for (const { debtorId, creditorId, shareCents } of debts) {
             const existing = await db
               .collection<BalanceDocument>(collectionNames.balances)
               .findOne(
                 {
                   debtorId,
-                  creditorId: userId,
+                  creditorId,
                   status: pendingStatus,
                 },
                 { session },
@@ -241,7 +261,7 @@ export class FinanceService {
                 _id: balanceId,
                 legacyId: balanceId,
                 debtorId,
-                creditorId: userId,
+                creditorId,
                 amountCents: shareCents,
                 status: pendingStatus,
                 paidAt: null,
@@ -257,7 +277,7 @@ export class FinanceService {
               balanceId: balance._id,
               itemId: item._id,
               debtorId,
-              creditorId: userId,
+              creditorId,
               shareCents,
             };
             await db
@@ -382,6 +402,8 @@ export class FinanceService {
           product: item?.product ?? "",
           date: item?.date ?? "",
           market: item?.market ?? "",
+          consumerIds: item?.participantIds ?? [],
+          cashContributions: item ? resolveCashContributions(item) : [],
         };
       }),
       disputes: disputes.map((dispute) => serializeDispute(dispute, names)),
@@ -1334,6 +1356,7 @@ const newItemSchema = {
       minimum: 1,
       maximum: Number.MAX_SAFE_INTEGER,
     },
+    receiptUrl: { type: "string", format: "uri", maxLength: 2048 },
     buyerId: { type: "string", maxLength: 100 },
     participantIds: {
       type: "array",
@@ -1347,6 +1370,23 @@ const newItemSchema = {
       maxItems: 20,
       uniqueItems: true,
       items: { type: "string", minLength: 1, maxLength: 100 },
+    },
+    cashContributions: {
+      type: "array",
+      maxItems: 20,
+      items: {
+        type: "object",
+        required: ["userId", "amountCents"],
+        additionalProperties: false,
+        properties: {
+          userId: { type: "string", minLength: 1, maxLength: 100 },
+          amountCents: {
+            type: "integer",
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+          },
+        },
+      },
     },
   },
 } as const;
@@ -1446,6 +1486,16 @@ export function validateNewItem(item: NewItemInput, userId: string): void {
       "Market and product are required.",
     );
   }
+  if (
+    item.receiptUrl !== undefined &&
+    (item.receiptUrl.length > 2048 || !isHttpUrl(item.receiptUrl))
+  ) {
+    throw new FinanceError(
+      400,
+      "INVALID_REQUEST",
+      "Receipt URL must be a valid HTTP or HTTPS URL.",
+    );
+  }
   if (item.participantIds.length > 20) {
     throw new FinanceError(
       400,
@@ -1453,12 +1503,56 @@ export function validateNewItem(item: NewItemInput, userId: string): void {
       "Participants must stay within the supported limit.",
     );
   }
-  if (item.paidDirectlyBy.some((id) => !item.participantIds.includes(id))) {
+  if (
+    !item.cashContributions &&
+    item.paidDirectlyBy.some((id) => !item.participantIds.includes(id))
+  ) {
     throw new FinanceError(
       400,
       "INVALID_REQUEST",
       "Direct payers must be participants in the item.",
     );
+  }
+  if (item.cashContributions) {
+    const payerIds = item.cashContributions.map(
+      (contribution) => contribution.userId,
+    );
+    if (new Set(payerIds).size !== payerIds.length) {
+      throw new FinanceError(
+        400,
+        "INVALID_REQUEST",
+        "Cash contributors must be unique.",
+      );
+    }
+    if (
+      item.cashContributions.some(
+        ({ userId, amountCents }) =>
+          !userId || !Number.isSafeInteger(amountCents) || amountCents < 0,
+      )
+    ) {
+      throw new FinanceError(
+        400,
+        "INVALID_REQUEST",
+        "Cash contributions must use non-negative integer cents.",
+      );
+    }
+    const paidCents = item.cashContributions.reduce(
+      (total, contribution) => total + contribution.amountCents,
+      0,
+    );
+    if (
+      !Number.isSafeInteger(paidCents) ||
+      paidCents !== item.valueCents ||
+      !item.cashContributions.some(
+        (contribution) => contribution.amountCents > 0,
+      )
+    ) {
+      throw new FinanceError(
+        400,
+        "INVALID_REQUEST",
+        "Cash contributions must add up to the item value.",
+      );
+    }
   }
 }
 
@@ -1492,15 +1586,87 @@ export function calculateItemDebts(
   participantIds: string[],
   creditorId: string,
   paidDirectlyBy: string[],
-): { debtorId: string; shareCents: number }[] {
-  return [...allocateShares(amountCents, participantIds)]
-    .filter(
-      ([participantId, shareCents]) =>
-        participantId !== creditorId &&
-        !paidDirectlyBy.includes(participantId) &&
-        shareCents > 0,
-    )
-    .map(([debtorId, shareCents]) => ({ debtorId, shareCents }));
+  cashContributions?: { userId: string; amountCents: number }[],
+): { debtorId: string; creditorId: string; shareCents: number }[] {
+  const shares = allocateShares(amountCents, participantIds);
+  const contributions = cashContributions
+    ? new Map(
+        cashContributions.map(({ userId, amountCents: paidCents }) => [
+          userId,
+          paidCents,
+        ]),
+      )
+    : legacyCashContributions(amountCents, shares, creditorId, paidDirectlyBy);
+  const netAmounts = new Map<string, number>();
+  const userIds = new Set([...shares.keys(), ...contributions.keys()]);
+  for (const userId of userIds) {
+    netAmounts.set(
+      userId,
+      (contributions.get(userId) ?? 0) - (shares.get(userId) ?? 0),
+    );
+  }
+  const creditors = [...netAmounts]
+    .filter(([, amount]) => amount > 0)
+    .map(([userId, amount]) => ({ userId, amount }))
+    .sort((left, right) => left.userId.localeCompare(right.userId));
+  const debtors = [...netAmounts]
+    .filter(([, amount]) => amount < 0)
+    .map(([userId, amount]) => ({ userId, amount: -amount }))
+    .sort((left, right) => left.userId.localeCompare(right.userId));
+  const debts: { debtorId: string; creditorId: string; shareCents: number }[] =
+    [];
+  let debtorIndex = 0;
+  let creditorIndex = 0;
+  while (debtorIndex < debtors.length && creditorIndex < creditors.length) {
+    const debtor = debtors[debtorIndex]!;
+    const creditor = creditors[creditorIndex]!;
+    const shareCents = Math.min(debtor.amount, creditor.amount);
+    if (shareCents > 0) {
+      debts.push({
+        debtorId: debtor.userId,
+        creditorId: creditor.userId,
+        shareCents,
+      });
+    }
+    debtor.amount -= shareCents;
+    creditor.amount -= shareCents;
+    if (debtor.amount === 0) debtorIndex += 1;
+    if (creditor.amount === 0) creditorIndex += 1;
+  }
+  return debts;
+}
+
+function legacyCashContributions(
+  amountCents: number,
+  shares: Map<string, number>,
+  buyerId: string,
+  paidDirectlyBy: string[],
+): Map<string, number> {
+  const contributions = new Map<string, number>();
+  let directPaidCents = 0;
+  for (const userId of paidDirectlyBy) {
+    if (userId === buyerId) continue;
+    const shareCents = shares.get(userId) ?? 0;
+    contributions.set(userId, shareCents);
+    directPaidCents += shareCents;
+  }
+  contributions.set(buyerId, amountCents - directPaidCents);
+  return contributions;
+}
+
+function resolveCashContributions(
+  item: ItemDocument,
+): { userId: string; amountCents: number }[] {
+  if (item.cashContributions) return item.cashContributions;
+  const shares = allocateShares(item.amountCents, item.participantIds);
+  return [
+    ...legacyCashContributions(
+      item.amountCents,
+      shares,
+      item.buyerId,
+      item.paidDirectlyBy,
+    ),
+  ].map(([userId, amountCents]) => ({ userId, amountCents }));
 }
 
 function serializeItem(item: ItemDocument, names: UserNames = new Map()) {
@@ -1512,10 +1678,12 @@ function serializeItem(item: ItemDocument, names: UserNames = new Map()) {
     category: item.category,
     valueCents: item.amountCents,
     value: item.amountCents / 100,
+    receiptUrl: item.receiptUrl ?? "",
     buyerId: item.buyerId,
     buyerName: names.get(item.buyerId) ?? "",
     participantIds: item.participantIds,
     paidDirectlyBy: item.paidDirectlyBy,
+    cashContributions: resolveCashContributions(item),
   };
 }
 
@@ -1580,7 +1748,11 @@ function collectUserIds(
 ): string[] {
   return [
     ...balances.flatMap((balance) => [balance.debtorId, balance.creditorId]),
-    ...items.flatMap((item) => [item.buyerId, ...item.participantIds]),
+    ...items.flatMap((item) => [
+      item.buyerId,
+      ...item.participantIds,
+      ...resolveCashContributions(item).map(({ userId }) => userId),
+    ]),
   ];
 }
 
@@ -1628,6 +1800,20 @@ function isValidDate(value: string): boolean {
   return (
     Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
   );
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
 }
 
 function currentMonth(): string {
