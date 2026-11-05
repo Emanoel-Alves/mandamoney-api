@@ -150,11 +150,29 @@ export async function buildApp({
         error: { code: error.code, message: error.message },
       });
     }
-    if (error instanceof Error && "validation" in error && error.validation) {
+    if (
+      error instanceof Error &&
+      "validation" in error &&
+      Array.isArray(error.validation)
+    ) {
+      const details = error.validation.flatMap((entry) => {
+        if (typeof entry !== "object" || entry === null) return [];
+        const path =
+          "instancePath" in entry && typeof entry.instancePath === "string"
+            ? entry.instancePath || "request"
+            : "request";
+        const message =
+          "message" in entry && typeof entry.message === "string"
+            ? entry.message
+            : "";
+        return message ? [`${path}: ${message}`] : [];
+      });
       return reply.code(400).send({
         error: {
           code: "INVALID_REQUEST",
-          message: "Request validation failed.",
+          message: details.length
+            ? `Request validation failed: ${details.join("; ")}`
+            : "Request validation failed.",
         },
       });
     }

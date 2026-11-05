@@ -67,6 +67,28 @@ test("does not allow cross-origin calls from untrusted origins", async () => {
   }
 });
 
+test("reports the field and rule for request schema validation failures", async () => {
+  const app = await buildApp({
+    config: parseConfig({ NODE_ENV: "test" }),
+    auth,
+    database: { async ping() {} },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { phone: "11999999999", birthday: "2020-01-01" },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().error.code, "INVALID_REQUEST");
+    assert.match(response.json().error.message, /\/birthday.*pattern/);
+  } finally {
+    await app.close();
+  }
+});
+
 test("serves database categories publicly and protects category creation", async () => {
   const category: CategoryDocument = {
     _id: "category-cereais",
