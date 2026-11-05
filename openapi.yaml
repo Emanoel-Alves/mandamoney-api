@@ -547,9 +547,8 @@ components:
         receiptUrl:
           {
             type: string,
-            format: uri,
             maxLength: 2048,
-            description: HTTP or HTTPS link to the source receipt,
+            description: HTTP or HTTPS link to the source receipt; NFC-e QR links may contain pipe separators in the query,
           }
         buyerId:
           {

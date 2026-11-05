@@ -248,7 +248,8 @@ test("validates optional receipt links and rejects non-HTTP URLs", () => {
     valueCents: 1_000,
     participantIds: ["authenticated-user"],
     paidDirectlyBy: [],
-    receiptUrl: "https://example.com/receipt?id=123",
+    receiptUrl:
+      "https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html?p=23261004971531000182652060000426611418382990|2|1|2|5fb102fe1ad2ee389b7b7c3042551a3b1900638f",
   };
   assert.doesNotThrow(() => validateNewItem(validItem, "authenticated-user"));
   assert.throws(
@@ -401,7 +402,8 @@ test("protects all finance routes and uses only identity from bearer session", a
             market: "Market",
             product: "Product",
             valueCents: 500,
-            receiptUrl: "https://example.com/nfce/123",
+            receiptUrl:
+              "https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html?p=23261004971531000182652060000426611418382990|2|1|2|5fb102fe1ad2ee389b7b7c3042551a3b1900638f",
             participantIds: ["authenticated-user", "another-user"],
             paidDirectlyBy: [],
           },
@@ -413,7 +415,7 @@ test("protects all finance routes and uses only identity from bearer session", a
     assert.equal(calls[1]?.[1], "authenticated-user");
     assert.equal(
       (calls[1]?.[3] as { receiptUrl?: string }[])[0]?.receiptUrl,
-      "https://example.com/nfce/123",
+      "https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html?p=23261004971531000182652060000426611418382990|2|1|2|5fb102fe1ad2ee389b7b7c3042551a3b1900638f",
     );
   } finally {
     await app.close();

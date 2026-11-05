@@ -1356,7 +1356,7 @@ const newItemSchema = {
       minimum: 1,
       maximum: Number.MAX_SAFE_INTEGER,
     },
-    receiptUrl: { type: "string", format: "uri", maxLength: 2048 },
+    receiptUrl: { type: "string", maxLength: 2048 },
     buyerId: { type: "string", maxLength: 100 },
     participantIds: {
       type: "array",
