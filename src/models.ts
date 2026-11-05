@@ -20,6 +20,7 @@ export type ItemDocument = {
   category: string;
   amountCents: number;
   receiptUrl?: string;
+  receiptIdentifier?: string;
   participantIds: string[];
   paidDirectlyBy: string[];
   cashContributions?: { userId: string; amountCents: number }[];
@@ -130,6 +131,15 @@ export type SessionDocument = {
   revokedAt: Date | null;
 };
 
+export type PushSubscriptionDocument = {
+  _id?: never;
+  userId: string;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export const collectionNames = {
   users: "users",
   items: "items",
@@ -143,6 +153,7 @@ export const collectionNames = {
   categories: "categories",
   productCategoryMappings: "productCategoryMappings",
   shoppingListItems: "shoppingListItems",
+  pushSubscriptions: "pushSubscriptions",
 } as const;
 
 export const indexes: Record<keyof typeof collectionNames, IndexDescription[]> =
@@ -156,6 +167,11 @@ export const indexes: Record<keyof typeof collectionNames, IndexDescription[]> =
       { key: { date: -1, _id: -1 }, name: "items_date_id_desc" },
       { key: { buyerId: 1, date: -1 }, name: "items_buyer_date" },
       { key: { participantIds: 1, date: -1 }, name: "items_participant_date" },
+      {
+        key: { receiptIdentifier: 1 },
+        sparse: true,
+        name: "items_receipt_identifier",
+      },
     ],
     balances: [
       { key: { legacyId: 1 }, unique: true, name: "balances_legacy_id_unique" },
@@ -257,6 +273,10 @@ export const indexes: Record<keyof typeof collectionNames, IndexDescription[]> =
     shoppingListItems: [
       { key: { createdAt: -1, _id: -1 }, name: "shopping_list_created_desc" },
       { key: { addedBy: 1, createdAt: -1 }, name: "shopping_list_added_by" },
+    ],
+    pushSubscriptions: [
+      { key: { endpoint: 1 }, unique: true, name: "push_endpoint_unique" },
+      { key: { userId: 1 }, name: "push_user" },
     ],
   };
 

@@ -37,10 +37,11 @@ These credentials exist only in `mandamoney_test`.
 [`render.yaml`](./render.yaml) defines a separate Render Free Web Service for
 the test API. It is intentionally **not** a production service: Render's free
 web instances sleep when idle and have monthly usage limits. The blueprint
-uses `mandamoney_test`, creates only synthetic fixtures before deploy, and
-prompts for `MONGODB_URI` and `LEGACY_AUTH_PEPPER` instead of storing secrets
-plus the optional provider URLs instead of storing secrets in Git. For
-stronger separation, create an Atlas database user restricted to
+uses `mandamoney_test` and creates only synthetic fixtures before deploy. Set
+`MONGODB_URI` and `LEGACY_AUTH_PEPPER` in Render, not in Git. The
+`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` values can be left
+empty to deploy without push delivery; configure all three to enable it.
+For stronger separation, create an Atlas database user restricted to
 `mandamoney_test`; do not reuse production database credentials. Seeding runs
 in the build command because Render Free does not provide a separate pre-deploy
 command.
@@ -83,7 +84,15 @@ before supporting multiple homes in a deployment.
 Implemented finance routes include bootstrap, cursor-paginated item reads,
 idempotent item batches, balances and balance details, payment requests and
 confirmation, dispute submission and resolution, reciprocal offsets, and
-pending notifications. `GET /api/v1/household/users` returns the registered
+pending notifications. Web Push subscriptions are stored per household member;
+the API sends push messages when a member is included in a shared purchase, a
+payment is reported, or an item is disputed. Configure `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` on the API host. Generate the key pair
+with `npx web-push generate-vapid-keys`; keep the private key only in the API
+host's secret settings. `GET /api/v1/push/public-key` exposes only the public
+key, while authenticated subscription routes associate each device with the
+current account.
+`GET /api/v1/household/users` returns the registered
 members of this single household. Items keep the authenticated registrant in
 `buyerId`; the registrant does not have to participate in the split. Other
 participants marked in `paidDirectlyBy` are excluded from resulting balances.

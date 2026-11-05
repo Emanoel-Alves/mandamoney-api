@@ -88,6 +88,18 @@ paths:
                   balances:
                     type: array
                     items: { $ref: "#/components/schemas/Balance" }
+                  accumulatedPurchases:
+                    oneOf:
+                      - type: "null"
+                      - type: object
+                        required: [fromMonth, toMonth, amountCents, openMonths]
+                        properties:
+                          fromMonth: { type: string, pattern: '^\d{4}-\d{2}$' }
+                          toMonth: { type: string, pattern: '^\d{4}-\d{2}$' }
+                          amountCents: { type: integer, minimum: 0 }
+                          openMonths:
+                            type: array
+                            items: { type: string, pattern: '^\d{4}-\d{2}$' }
                   notifications:
                     type: object
                     properties:
@@ -134,6 +146,25 @@ paths:
       responses:
         "201": { description: Items and balance links created. }
         "400": { $ref: "#/components/responses/BadRequest" }
+  /receipts/{receiptIdentifier}:
+    get:
+      summary: Check whether an NFC-e has already been imported
+      parameters:
+        - in: path
+          name: receiptIdentifier
+          required: true
+          schema: { type: string, pattern: '^\d{44}$' }
+      responses:
+        "200":
+          description: Duplicate status for the receipt identifier.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alreadyAdded]
+                properties:
+                  alreadyAdded: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /shopping-list:
     get:
       summary: List household items still needed
@@ -435,6 +466,57 @@ paths:
                   disputes:
                     type: array
                     items: { $ref: "#/components/schemas/Dispute" }
+  /push/public-key:
+    get:
+      security: []
+      summary: Return the public VAPID key used by web clients
+      responses:
+        "200":
+          description: The public key, or null when push delivery is not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [publicKey]
+                properties:
+                  publicKey: { type: [string, "null"] }
+  /push/subscriptions:
+    post:
+      summary: Register a push subscription for the authenticated device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint, keys]
+              properties:
+                endpoint: { type: string, format: uri, maxLength: 2048 }
+                expirationTime: { type: [number, "null"] }
+                keys:
+                  type: object
+                  required: [p256dh, auth]
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+      responses:
+        "200": { description: Device subscription registered. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      summary: Remove a push subscription from the authenticated account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint: { type: string, format: uri, maxLength: 2048 }
+      responses:
+        "200": { description: Device subscription removed if it existed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /imports/nfce/qr:
     post:
       summary: Look up a Ceará NFC-e QR code directly with SEFAZ
@@ -448,7 +530,11 @@ paths:
               properties:
                 qrCode: { type: string, maxLength: 4096 }
       responses:
-        "200": { description: Parsed receipt data. }
+        "200":
+          description: Parsed receipt data including the NFC-e access key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReceiptImport" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "502": { $ref: "#/components/responses/BadGateway" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
@@ -467,7 +553,11 @@ paths:
                 mimeType:
                   { type: string, enum: [image/jpeg, image/png, image/webp] }
       responses:
-        "200": { description: Parsed receipt data. }
+        "200":
+          description: Parsed receipt data; an access key is included when legible.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReceiptImport" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "502": { $ref: "#/components/responses/BadGateway" }
@@ -550,6 +640,12 @@ components:
             maxLength: 2048,
             description: HTTP or HTTPS link to the source receipt; NFC-e QR links may contain pipe separators in the query,
           }
+        receiptIdentifier:
+          {
+            type: string,
+            pattern: '^\d{44}$',
+            description: 44-digit access key identifying an NFC-e receipt,
+          }
         buyerId:
           {
             type: string,
@@ -577,6 +673,22 @@ components:
             properties:
               userId: { type: string, minLength: 1, maxLength: 100 }
               amountCents: { type: integer, minimum: 0 }
+    ReceiptImport:
+      type: object
+      required: [success, market, date, items]
+      properties:
+        success: { type: boolean, const: true }
+        market: { type: string }
+        date: { type: string }
+        receiptIdentifier: { type: string, pattern: '^\d{44}$' }
+        items:
+          type: array
+          items:
+            type: object
+            required: [product, value]
+            properties:
+              product: { type: string }
+              value: { type: number, exclusiveMinimum: 0 }
     ItemPage:
       type: object
       required: [items, nextCursor]

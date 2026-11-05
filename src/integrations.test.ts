@@ -39,6 +39,8 @@ test("sends receipt image to Gemini and normalizes its JSON response", async () 
                       ],
                       market: "Mercado Teste",
                       date: "04/10/2026",
+                      receiptIdentifier:
+                        "23261004971531000182652060000426611418382991",
                     }),
                   },
                 ],
@@ -54,6 +56,7 @@ test("sends receipt image to Gemini and normalizes its JSON response", async () 
     success: true,
     market: "Mercado Teste",
     date: "04/10/2026",
+    receiptIdentifier: "23261004971531000182652060000426611418382991",
     items: [{ product: "Arroz", value: 12.5 }],
   });
   assert.equal(
@@ -234,6 +237,7 @@ test("looks up Ceará NFC-e directly and parses SEFAZ response data", async () =
     success: true,
     market: "MERCADO & CIA",
     date: "03/10/2026",
+    receiptIdentifier: "23260903995515024180650160000264791007017339",
     items: [
       { product: "Pão & leite", value: 12.34 },
       { product: "Arroz", value: 1234.56 },
@@ -280,6 +284,7 @@ test("accepts legacy HTTP and official Ceará SEFAZ subdomains in QR URLs", asyn
       success: true,
       market: "NFC-e",
       date: "",
+      receiptIdentifier: "23260903995515024180650160000264791007017339",
       items: [{ product: "Produto", value: 1 }],
     });
   }

@@ -16,13 +16,15 @@ Retorne somente JSON válido com este formato:
 {
   "items": [{ "product": "nome do produto", "value": 0.00 }],
   "market": "nome do mercado",
-  "date": "dd/MM/yyyy"
+  "date": "dd/MM/yyyy",
+  "receiptIdentifier": "chave de acesso com 44 dígitos, se legível"
 }
 
 Regras:
 - value deve ser o valor total do item, com ponto decimal nos números.
 - Não inclua subtotal, desconto, total da nota ou impostos como produto.
 - Se não conseguir identificar mercado ou data, use string vazia.
+- receiptIdentifier deve conter somente os 44 dígitos da chave de acesso da NFC-e, se estiver legível; caso contrário, use string vazia.
 - Inclua somente produtos com nome e valor total positivos identificáveis.`;
 const sefazCeNfceUrl =
   "http://nfce.sefaz.ce.gov.br/nfce/api/notasFiscal/qrcodev2/";
@@ -89,7 +91,10 @@ export class ReceiptImportService {
       );
     }
 
-    return parseNfceHtml(result.xml);
+    return {
+      ...parseNfceHtml(result.xml),
+      receiptIdentifier: payload.chave_acesso,
+    };
   }
 
   async readReceipt(imageBase64: string, mimeType: string): Promise<unknown> {
@@ -294,6 +299,7 @@ function normalizeReceiptResult(result: Record<string, unknown>): {
   success: true;
   market: string;
   date: string;
+  receiptIdentifier?: string;
   items: { product: string; value: number }[];
 } {
   if (!Array.isArray(result.items)) {
@@ -324,10 +330,16 @@ function normalizeReceiptResult(result: Record<string, unknown>): {
 
   const market = typeof result.market === "string" ? result.market.trim() : "";
   const date = typeof result.date === "string" ? result.date.trim() : "";
+  const receiptIdentifier =
+    typeof result.receiptIdentifier === "string" &&
+    /^\d{44}$/.test(result.receiptIdentifier.trim())
+      ? result.receiptIdentifier.trim()
+      : "";
   return {
     success: true,
     market: market || "Compra por foto",
     date,
+    ...(receiptIdentifier ? { receiptIdentifier } : {}),
     items,
   };
 }

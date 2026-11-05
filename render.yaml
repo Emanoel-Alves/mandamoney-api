@@ -24,6 +24,12 @@ services:
         value: gemini-3.6-flash
       - key: GEMINI_FALLBACK_MODEL
         value: gemini-2.5-flash
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
       - key: ALLOW_TEST_SEED
         value: "true"
       - key: CORS_ORIGINS

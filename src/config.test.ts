@@ -49,6 +49,26 @@ test("configures Gemini credentials and restricts the model name", () => {
   assert.throws(() => parseConfig({ GEMINI_MODEL: "../other-model" }));
 });
 
+test("requires complete VAPID configuration for web push", () => {
+  assert.equal(parseConfig({}).vapidPublicKey, undefined);
+  assert.throws(() => parseConfig({ VAPID_PUBLIC_KEY: "public-key" }));
+  const config = parseConfig({
+    VAPID_PUBLIC_KEY: "public-key",
+    VAPID_PRIVATE_KEY: "private-key",
+    VAPID_SUBJECT: "mailto:push@example.com",
+  });
+  assert.equal(config.vapidPublicKey, "public-key");
+  assert.equal(config.vapidPrivateKey, "private-key");
+  assert.equal(config.vapidSubject, "mailto:push@example.com");
+  assert.throws(() =>
+    parseConfig({
+      VAPID_PUBLIC_KEY: "public-key",
+      VAPID_PRIVATE_KEY: "private-key",
+      VAPID_SUBJECT: "https://",
+    }),
+  );
+});
+
 test("accepts only HTTPS remote NFC-e providers", () => {
   assert.throws(
     () =>

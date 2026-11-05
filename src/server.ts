@@ -7,6 +7,7 @@ import { ensureIndexes } from "./models.js";
 import { parseConfig, requireMongoUri } from "./config.js";
 import { createDatabase } from "./database.js";
 import { ShoppingListService } from "./shopping-list.js";
+import { PushNotificationService } from "./push.js";
 
 const config = parseConfig();
 const database = createDatabase({
@@ -17,14 +18,16 @@ const auth = new AuthService(
   new MongoAuthStore(database),
   config.legacyAuthPepper,
 );
+const push = new PushNotificationService(database, config);
 const app = await buildApp({
   config,
   database,
   auth,
-  finance: new FinanceService(database),
+  finance: new FinanceService(database, undefined, push),
   categories: new CategoryService(new MongoCategoryStore(database)),
   imports: new ReceiptImportService(config),
   shoppingList: new ShoppingListService(database),
+  push,
 });
 
 const shutdown = async (signal: string) => {

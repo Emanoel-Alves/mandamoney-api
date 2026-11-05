@@ -40,6 +40,8 @@ test("OpenAPI contract declares the expected API operations and auth", async () 
     "/disputes/{disputeId}/resolve",
     "/balances/{balanceId}/offset",
     "/notifications",
+    "/push/public-key",
+    "/push/subscriptions",
     "/imports/nfce/qr",
     "/imports/receipt/ocr",
   ]) {
@@ -55,4 +57,7 @@ test("OpenAPI contract declares the expected API operations and auth", async () 
   assert.ok(paths["/shopping-list"]?.post);
   assert.ok(paths["/shopping-list/{itemId}"]?.delete);
   assert.ok(paths["/payment-requests/{requestId}/confirm"]?.post);
+  assert.ok(paths["/push/public-key"]?.get);
+  assert.ok(paths["/push/subscriptions"]?.post);
+  assert.ok(paths["/push/subscriptions"]?.delete);
 });

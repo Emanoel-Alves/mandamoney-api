@@ -19,6 +19,7 @@ import {
   type PaymentRequestDocument,
   type UserDocument,
 } from "./models.js";
+import type { PushMessage, PushNotificationSender } from "./push.js";
 
 const idempotencyLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 const pendingStatus = "pending" as const;
@@ -41,6 +42,7 @@ type NewItemInput = {
   category?: string;
   valueCents: number;
   receiptUrl?: string;
+  receiptIdentifier?: string;
   buyerId?: string;
   participantIds: string[];
   paidDirectlyBy: string[];
@@ -49,12 +51,15 @@ type NewItemInput = {
 
 type FinanceReply = { statusCode: number; body: unknown };
 
+type PushEvent = { userId: string; message: PushMessage };
+
 type UserNames = Map<string, string>;
 
 export class FinanceService {
   constructor(
     private readonly database: Database,
     private readonly now: () => Date = () => new Date(),
+    private readonly pushNotifications?: PushNotificationSender,
   ) {}
 
   async bootstrap(userId: string, month: string): Promise<unknown> {
@@ -89,6 +94,11 @@ export class FinanceService {
           .toArray(),
       ]);
     if (!user) throw new FinanceError(404, "NOT_FOUND", "User not found.");
+    const accumulatedPurchases = await this.findAccumulatedPurchases(
+      db,
+      balances,
+      month,
+    );
     const names = await this.loadUserNames(
       db,
       collectUserIds(balances, itemsPage.items),
@@ -98,11 +108,35 @@ export class FinanceService {
       items: itemsPage.items.map((item) => serializeItem(item, names)),
       itemsNextCursor: itemsPage.nextCursor,
       balances: balances.map((balance) => serializeBalance(balance, names)),
+      accumulatedPurchases,
       notifications: {
         paymentRequests: paymentRequests.length,
         disputes: disputes.length,
       },
     };
+  }
+
+  async checkReceipt(
+    _userId: string,
+    receiptIdentifier: string,
+  ): Promise<{ alreadyAdded: boolean }> {
+    if (!/^\d{44}$/.test(receiptIdentifier)) {
+      throw new FinanceError(
+        400,
+        "INVALID_REQUEST",
+        "Receipt identifier must contain 44 digits.",
+      );
+    }
+    const db = await this.database.connect();
+    const item = await db
+      .collection<ItemDocument>(collectionNames.items)
+      .findOne({
+        $or: [
+          { receiptIdentifier },
+          { receiptUrl: { $regex: receiptIdentifier } },
+        ],
+      });
+    return { alreadyAdded: Boolean(item) };
   }
 
   async listItems(
@@ -159,11 +193,13 @@ export class FinanceService {
       );
     }
     for (const item of items) validateNewItem(item, userId);
-    return this.runIdempotently(
+    const pushEvents: PushEvent[] = [];
+    const reply = await this.runIdempotently(
       userId,
       idempotencyKey,
       items,
       async (db, session) => {
+        pushEvents.length = 0;
         const userIds = [
           ...new Set(
             items.flatMap((item) => [
@@ -201,6 +237,9 @@ export class FinanceService {
             amountCents: input.valueCents,
             ...(input.receiptUrl
               ? { receiptUrl: input.receiptUrl.trim() }
+              : {}),
+            ...(input.receiptIdentifier
+              ? { receiptIdentifier: input.receiptIdentifier }
               : {}),
             participantIds: [...input.participantIds],
             paidDirectlyBy: [...input.paidDirectlyBy],
@@ -285,6 +324,19 @@ export class FinanceService {
               .insertOne(link, { session });
           }
         }
+        for (const item of createdItems) {
+          for (const recipientId of new Set(item.participantIds)) {
+            if (recipientId === userId) continue;
+            pushEvents.push({
+              userId: recipientId,
+              message: {
+                title: "Nova compra compartilhada",
+                body: `Você foi incluído em ${item.product}.`,
+                tag: `shared-item-${item._id}`,
+              },
+            });
+          }
+        }
         return {
           statusCode: 201,
           body: {
@@ -294,6 +346,8 @@ export class FinanceService {
         };
       },
     );
+    await this.deliverPushNotifications(pushEvents);
+    return reply;
   }
 
   async getBalances(userId: string): Promise<unknown> {
@@ -421,11 +475,13 @@ export class FinanceService {
     balanceId: string,
     idempotencyKey: string,
   ): Promise<FinanceReply> {
-    return this.runIdempotently(
+    const pushEvents: PushEvent[] = [];
+    const reply = await this.runIdempotently(
       userId,
       idempotencyKey,
       { balanceId },
       async (db, session) => {
+        pushEvents.length = 0;
         const balance = await db
           .collection<BalanceDocument>(collectionNames.balances)
           .findOne(
@@ -442,6 +498,15 @@ export class FinanceService {
             "CONFLICT",
             "Only the debtor can request payment for a pending balance.",
           );
+        const debtor = await db
+          .collection<UserDocument>(collectionNames.users)
+          .findOne(
+            { _id: userId },
+            { session, projection: { _id: 1, name: 1 } },
+          );
+        if (!debtor) {
+          throw new FinanceError(404, "NOT_FOUND", "User not found.");
+        }
         const requestId = randomUUID();
         const request: PaymentRequestDocument = {
           _id: requestId,
@@ -476,12 +541,22 @@ export class FinanceService {
         await db
           .collection<PaymentRequestDocument>(collectionNames.paymentRequests)
           .insertOne(request, { session });
+        pushEvents.push({
+          userId: balance.creditorId,
+          message: {
+            title: "Pagamento informado",
+            body: `${debtor.name} informou o pagamento de ${formatCents(balance.amountCents)}.`,
+            tag: `payment-request-${requestId}`,
+          },
+        });
         return {
           statusCode: 201,
           body: { paymentRequest: serializePaymentRequest(request) },
         };
       },
     );
+    await this.deliverPushNotifications(pushEvents);
+    return reply;
   }
 
   async confirmPayment(
@@ -551,11 +626,13 @@ export class FinanceService {
     itemId: string,
     idempotencyKey: string,
   ): Promise<FinanceReply> {
-    return this.runIdempotently(
+    const pushEvents: PushEvent[] = [];
+    const reply = await this.runIdempotently(
       userId,
       idempotencyKey,
       { balanceId, itemId },
       async (db, session) => {
+        pushEvents.length = 0;
         const balance = await db
           .collection<BalanceDocument>(collectionNames.balances)
           .findOne(
@@ -572,6 +649,23 @@ export class FinanceService {
             "CONFLICT",
             "Only the debtor can dispute an item on a pending balance.",
           );
+        const [debtor, item] = await Promise.all([
+          db
+            .collection<UserDocument>(collectionNames.users)
+            .findOne(
+              { _id: userId },
+              { session, projection: { _id: 1, name: 1 } },
+            ),
+          db
+            .collection<ItemDocument>(collectionNames.items)
+            .findOne(
+              { _id: itemId },
+              { session, projection: { _id: 1, product: 1 } },
+            ),
+        ]);
+        if (!debtor || !item) {
+          throw new FinanceError(404, "NOT_FOUND", "User or item not found.");
+        }
         const link = await db
           .collection<BalanceItemDocument>(collectionNames.balanceItems)
           .findOne(
@@ -632,12 +726,22 @@ export class FinanceService {
         await db
           .collection<DisputeDocument>(collectionNames.disputes)
           .insertOne(dispute, { session });
+        pushEvents.push({
+          userId: balance.creditorId,
+          message: {
+            title: "Item contestado",
+            body: `${debtor.name} contestou ${item.product} (${formatCents(link.shareCents)}).`,
+            tag: `dispute-${disputeId}`,
+          },
+        });
         return {
           statusCode: 201,
           body: { dispute: serializeDispute(dispute) },
         };
       },
     );
+    await this.deliverPushNotifications(pushEvents);
+    return reply;
   }
 
   async resolveDispute(
@@ -926,6 +1030,84 @@ export class FinanceService {
     };
   }
 
+  private async findAccumulatedPurchases(
+    db: Db,
+    balances: BalanceDocument[],
+    currentMonth: string,
+  ): Promise<{
+    fromMonth: string;
+    toMonth: string;
+    amountCents: number;
+    openMonths: string[];
+  } | null> {
+    const openBalances = balances.filter(
+      (balance) =>
+        ["pending", "awaiting_confirmation", "contest_pending"].includes(
+          balance.status,
+        ) && balance.amountCents > 0,
+    );
+    if (!openBalances.length) return null;
+
+    const balanceIds = openBalances.map((balance) => balance._id);
+    const balanceItems = await db
+      .collection<BalanceItemDocument>(collectionNames.balanceItems)
+      .find({ balanceId: { $in: balanceIds } })
+      .toArray();
+    if (!balanceItems.length) return null;
+
+    const itemIds = [...new Set(balanceItems.map((item) => item.itemId))];
+    const [items, acceptedDisputes, adjustments] = await Promise.all([
+      db
+        .collection<ItemDocument>(collectionNames.items)
+        .find({ _id: { $in: itemIds } })
+        .toArray(),
+      db
+        .collection<DisputeDocument>(collectionNames.disputes)
+        .find({
+          balanceId: { $in: balanceIds },
+          status: "accepted",
+        })
+        .toArray(),
+      db
+        .collection<BalanceAdjustmentDocument>(
+          collectionNames.balanceAdjustments,
+        )
+        .find({ balanceIds: { $in: balanceIds } })
+        .toArray(),
+    ]);
+    const openMonths = findOpenPurchaseMonths(
+      openBalances,
+      balanceItems,
+      items,
+      acceptedDisputes,
+      adjustments,
+      currentMonth,
+    );
+    const fromMonth = openMonths[0];
+    if (!fromMonth) return null;
+
+    const total = await db
+      .collection<ItemDocument>(collectionNames.items)
+      .aggregate<{ amountCents: number }>([
+        {
+          $match: {
+            date: {
+              $gte: `${fromMonth}-01`,
+              $lt: nextMonthStart(currentMonth),
+            },
+          },
+        },
+        { $group: { _id: null, amountCents: { $sum: "$amountCents" } } },
+      ])
+      .next();
+    return {
+      fromMonth,
+      toMonth: currentMonth,
+      amountCents: total?.amountCents ?? 0,
+      openMonths,
+    };
+  }
+
   private async findItemsForMonth(
     db: Db,
     month: string,
@@ -953,6 +1135,23 @@ export class FinanceService {
       .find({ _id: { $in: ids } }, { projection: { _id: 1, name: 1 } })
       .toArray();
     return new Map(users.map((user) => [user._id, user.name]));
+  }
+
+  private async deliverPushNotifications(events: PushEvent[]): Promise<void> {
+    if (!this.pushNotifications) return;
+    for (const event of events) {
+      try {
+        await this.pushNotifications.sendToUser(event.userId, event.message);
+      } catch (error) {
+        const detail =
+          error instanceof AggregateError
+            ? `${error.errors.length} push endpoint(s) failed`
+            : error instanceof Error
+              ? error.name
+              : "Unknown delivery error";
+        console.error("Push notification delivery failed.", detail);
+      }
+    }
   }
 
   private async runIdempotently(
@@ -1044,11 +1243,89 @@ export class FinanceService {
   }
 }
 
+export function findOpenPurchaseMonths(
+  balances: BalanceDocument[],
+  balanceItems: BalanceItemDocument[],
+  items: ItemDocument[],
+  acceptedDisputes: DisputeDocument[],
+  adjustments: BalanceAdjustmentDocument[],
+  currentMonth: string,
+): string[] {
+  const activeBalances = balances.filter(
+    (balance) =>
+      ["pending", "awaiting_confirmation", "contest_pending"].includes(
+        balance.status,
+      ) && balance.amountCents > 0,
+  );
+  const itemById = new Map(items.map((item) => [item._id, item]));
+  const disputedItems = new Set(
+    acceptedDisputes.map((dispute) => `${dispute.balanceId}:${dispute.itemId}`),
+  );
+  const adjustmentCentsByBalance = new Map<string, number>();
+  for (const adjustment of adjustments) {
+    for (const balanceId of adjustment.balanceIds) {
+      adjustmentCentsByBalance.set(
+        balanceId,
+        (adjustmentCentsByBalance.get(balanceId) ?? 0) + adjustment.amountCents,
+      );
+    }
+  }
+  const linksByBalance = new Map<string, BalanceItemDocument[]>();
+  for (const link of balanceItems) {
+    const links = linksByBalance.get(link.balanceId) ?? [];
+    links.push(link);
+    linksByBalance.set(link.balanceId, links);
+  }
+
+  const oldMonths: string[] = [];
+  for (const balance of activeBalances) {
+    let remainingCents = balance.amountCents;
+    let offsetCents = adjustmentCentsByBalance.get(balance._id) ?? 0;
+    const links = (linksByBalance.get(balance._id) ?? [])
+      .filter((link) => !disputedItems.has(`${balance._id}:${link.itemId}`))
+      .sort(
+        (left, right) =>
+          (itemById.get(left.itemId)?.date ?? "").localeCompare(
+            itemById.get(right.itemId)?.date ?? "",
+          ) || left.itemId.localeCompare(right.itemId),
+      );
+    for (const link of links) {
+      if (remainingCents <= 0) break;
+      if (offsetCents >= link.shareCents) {
+        offsetCents -= link.shareCents;
+        continue;
+      }
+      if (offsetCents > 0) offsetCents = 0;
+      const item = itemById.get(link.itemId);
+      if (!item) continue;
+      remainingCents -= Math.min(remainingCents, link.shareCents);
+      const itemMonth = item.date.slice(0, 7);
+      if (
+        /^\d{4}-(0[1-9]|1[0-2])$/.test(itemMonth) &&
+        itemMonth < currentMonth
+      ) {
+        oldMonths.push(itemMonth);
+      }
+    }
+  }
+  return [...new Set(oldMonths)].sort();
+}
+
+function nextMonthStart(month: string): string {
+  const [yearText, monthText] = month.split("-");
+  const year = Number(yearText);
+  const number = Number(monthText);
+  return number === 12
+    ? `${year + 1}-01-01`
+    : `${year}-${String(number + 1).padStart(2, "0")}-01`;
+}
+
 export type FinanceApi = Pick<
   FinanceService,
   | "bootstrap"
   | "listItems"
   | "saveItems"
+  | "checkReceipt"
   | "getBalances"
   | "getHouseholdUsers"
   | "getDisputes"
@@ -1107,6 +1384,27 @@ export function registerFinanceRoutes(
         request.query.month,
         request.query.cursor,
         request.query.limit ?? 50,
+      ),
+  );
+
+  app.get<{ Params: { receiptIdentifier: string } }>(
+    "/api/v1/receipts/:receiptIdentifier",
+    {
+      preHandler: requireAuthentication(auth),
+      schema: {
+        params: {
+          type: "object",
+          required: ["receiptIdentifier"],
+          properties: {
+            receiptIdentifier: { type: "string", pattern: "^\\d{44}$" },
+          },
+        },
+      },
+    },
+    async (request) =>
+      finance.checkReceipt(
+        request.authUser!.id,
+        request.params.receiptIdentifier,
       ),
   );
 
@@ -1357,6 +1655,7 @@ const newItemSchema = {
       maximum: Number.MAX_SAFE_INTEGER,
     },
     receiptUrl: { type: "string", maxLength: 2048 },
+    receiptIdentifier: { type: "string", pattern: "^\\d{44}$" },
     buyerId: { type: "string", maxLength: 100 },
     participantIds: {
       type: "array",
@@ -1494,6 +1793,16 @@ export function validateNewItem(item: NewItemInput, userId: string): void {
       400,
       "INVALID_REQUEST",
       "Receipt URL must be a valid HTTP or HTTPS URL.",
+    );
+  }
+  if (
+    item.receiptIdentifier !== undefined &&
+    !/^\d{44}$/.test(item.receiptIdentifier)
+  ) {
+    throw new FinanceError(
+      400,
+      "INVALID_REQUEST",
+      "Receipt identifier must contain 44 digits.",
     );
   }
   if (item.participantIds.length > 20) {
@@ -1679,6 +1988,7 @@ function serializeItem(item: ItemDocument, names: UserNames = new Map()) {
     valueCents: item.amountCents,
     value: item.amountCents / 100,
     receiptUrl: item.receiptUrl ?? "",
+    receiptIdentifier: item.receiptIdentifier ?? "",
     buyerId: item.buyerId,
     buyerName: names.get(item.buyerId) ?? "",
     participantIds: item.participantIds,
@@ -1814,6 +2124,13 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function formatCents(amountCents: number): string {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(amountCents / 100);
 }
 
 function currentMonth(): string {

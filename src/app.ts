@@ -24,6 +24,7 @@ import {
   ShoppingListError,
   type ShoppingListApi,
 } from "./shopping-list.js";
+import { PushError, registerPushRoutes, type PushApi } from "./push.js";
 
 export interface DatabaseHealth {
   ping(): Promise<void>;
@@ -37,6 +38,7 @@ export type AppDependencies = {
   categories?: CategoryApi;
   imports?: ReceiptImportService;
   shoppingList?: ShoppingListApi;
+  push?: PushApi;
 };
 
 export async function buildApp({
@@ -47,6 +49,7 @@ export async function buildApp({
   categories,
   imports,
   shoppingList,
+  push,
 }: AppDependencies): Promise<FastifyInstance> {
   const app = Fastify({
     bodyLimit: 1_048_576,
@@ -97,6 +100,7 @@ export async function buildApp({
   if (categories) registerCategoryRoutes(app, categories, auth);
   if (imports) registerImportRoutes(app, imports, auth);
   if (shoppingList) registerShoppingListRoutes(app, shoppingList, auth);
+  if (push) registerPushRoutes(app, push, auth);
 
   app.get(
     "/health/live",
@@ -141,6 +145,11 @@ export async function buildApp({
       });
     }
     if (error instanceof ShoppingListError) {
+      return reply.code(error.statusCode).send({
+        error: { code: error.code, message: error.message },
+      });
+    }
+    if (error instanceof PushError) {
       return reply.code(error.statusCode).send({
         error: { code: error.code, message: error.message },
       });

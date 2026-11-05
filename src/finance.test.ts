@@ -10,10 +10,18 @@ import {
   calculateDisputeResult,
   calculateOffset,
   FinanceError,
+  findOpenPurchaseMonths,
   type FinanceApi,
   validateNewItem,
 } from "./finance.js";
 import type { AuthStore } from "./auth.js";
+import type {
+  BalanceAdjustmentDocument,
+  BalanceDocument,
+  BalanceItemDocument,
+  DisputeDocument,
+  ItemDocument,
+} from "./models.js";
 
 const accessToken = "a".repeat(43);
 const tokenHash = createHash("sha256").update(accessToken).digest("hex");
@@ -36,6 +44,10 @@ function buildFinanceApi(calls: unknown[][] = []): FinanceApi {
     async saveItems(userId, key, items) {
       calls.push(["saveItems", userId, key, items]);
       return { statusCode: 201, body: { items: [] } };
+    },
+    async checkReceipt(userId, receiptIdentifier) {
+      calls.push(["checkReceipt", userId, receiptIdentifier]);
+      return { alreadyAdded: receiptIdentifier.endsWith("1") };
     },
     async getBalances(userId) {
       calls.push(["getBalances", userId]);
@@ -138,7 +150,7 @@ test("allocates every cent deterministically across unique participants", () => 
       ["user-c", 334],
     ],
   );
-  assert.equal(
+  assert.deepEqual(
     [...shares.values()].reduce((sum, value) => sum + value, 0),
     1001,
   );
@@ -172,6 +184,111 @@ test("nets consumer shares against cash contributions", () => {
       ],
     ),
     [{ debtorId: "luiza", creditorId: "yago", shareCents: 500 }],
+  );
+});
+
+test("lists the months that still contribute to an open balance", () => {
+  const balance: BalanceDocument = {
+    _id: "balance-1",
+    legacyId: "balance-1",
+    debtorId: "debtor",
+    creditorId: "creditor",
+    amountCents: 400,
+    status: "pending",
+    paidAt: null,
+    updatedAt: new Date("2026-11-01T00:00:00Z"),
+  };
+  const october: ItemDocument = {
+    _id: "october",
+    legacyId: "october",
+    buyerId: "creditor",
+    date: "2026-10-25",
+    market: "Market",
+    product: "Item",
+    category: "",
+    amountCents: 1_000,
+    participantIds: ["debtor", "creditor"],
+    paidDirectlyBy: [],
+    createdAt: new Date("2026-10-25T00:00:00Z"),
+  };
+  const november: ItemDocument = {
+    ...october,
+    _id: "november",
+    legacyId: "november",
+    date: "2026-11-02",
+  };
+  const links: BalanceItemDocument[] = [
+    {
+      _id: "link-october",
+      balanceId: balance._id,
+      itemId: october._id,
+      debtorId: balance.debtorId,
+      creditorId: balance.creditorId,
+      shareCents: 500,
+    },
+    {
+      _id: "link-november",
+      balanceId: balance._id,
+      itemId: november._id,
+      debtorId: balance.debtorId,
+      creditorId: balance.creditorId,
+      shareCents: 200,
+    },
+  ];
+
+  assert.deepEqual(
+    findOpenPurchaseMonths(
+      [balance],
+      links,
+      [october, november],
+      [],
+      [],
+      "2026-11",
+    ),
+    ["2026-10"],
+  );
+  assert.deepEqual(
+    findOpenPurchaseMonths(
+      [{ ...balance, amountCents: 200 }],
+      links,
+      [october, november],
+      [
+        {
+          _id: "dispute-1",
+          legacyId: "dispute-1",
+          balanceId: balance._id,
+          itemId: october._id,
+          debtorId: balance.debtorId,
+          creditorId: balance.creditorId,
+          amountCents: 500,
+          status: "accepted",
+          requestedAt: new Date("2026-11-01T00:00:00Z"),
+          resolvedAt: new Date("2026-11-02T00:00:00Z"),
+        } satisfies DisputeDocument,
+      ],
+      [],
+      "2026-11",
+    ),
+    [],
+  );
+  const adjustment: BalanceAdjustmentDocument = {
+    _id: "adjustment-1",
+    idempotencyKey: "adjustment-key-1",
+    balanceIds: [balance._id, "reciprocal-balance"],
+    actorId: "debtor",
+    amountCents: 500,
+    createdAt: new Date("2026-11-01T00:00:00Z"),
+  };
+  assert.deepEqual(
+    findOpenPurchaseMonths(
+      [{ ...balance, amountCents: 200 }],
+      links,
+      [october, november],
+      [],
+      [adjustment],
+      "2026-11",
+    ),
+    [],
   );
 });
 
@@ -404,6 +521,7 @@ test("protects all finance routes and uses only identity from bearer session", a
             valueCents: 500,
             receiptUrl:
               "https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html?p=23261004971531000182652060000426611418382990|2|1|2|5fb102fe1ad2ee389b7b7c3042551a3b1900638f",
+            receiptIdentifier: "23261004971531000182652060000426611418382990",
             participantIds: ["authenticated-user", "another-user"],
             paidDirectlyBy: [],
           },
@@ -417,6 +535,32 @@ test("protects all finance routes and uses only identity from bearer session", a
       (calls[1]?.[3] as { receiptUrl?: string }[])[0]?.receiptUrl,
       "https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html?p=23261004971531000182652060000426611418382990|2|1|2|5fb102fe1ad2ee389b7b7c3042551a3b1900638f",
     );
+    assert.equal(
+      (calls[1]?.[3] as { receiptIdentifier?: string }[])[0]?.receiptIdentifier,
+      "23261004971531000182652060000426611418382990",
+    );
+
+    const receiptIdentifier = "23261004971531000182652060000426611418382991";
+    const receiptCheck = await app.inject({
+      method: "GET",
+      url: `/api/v1/receipts/${receiptIdentifier}`,
+      headers: { authorization: "Bearer " + accessToken },
+    });
+    assert.equal(receiptCheck.statusCode, 200);
+    assert.deepEqual(receiptCheck.json(), { alreadyAdded: true });
+    assert.deepEqual(calls[2], [
+      "checkReceipt",
+      "authenticated-user",
+      receiptIdentifier,
+    ]);
+
+    const invalidReceiptCheck = await app.inject({
+      method: "GET",
+      url: `/api/v1/receipts/${receiptIdentifier.slice(1)}`,
+      headers: { authorization: "Bearer " + accessToken },
+    });
+    assert.equal(invalidReceiptCheck.statusCode, 400);
+    assert.equal(calls.length, 3);
   } finally {
     await app.close();
   }
