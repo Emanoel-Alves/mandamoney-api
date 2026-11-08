@@ -361,6 +361,9 @@ function parseSefazCeQrCode(qrCode: string): {
   tipo_ambiente: string;
   identificador_csc: string;
   codigo_hash: string;
+  dia_data_emissao?: string;
+  valor_total_nfce?: string;
+  digVal?: string;
 } {
   let url: URL;
   try {
@@ -400,20 +403,29 @@ function parseSefazCeQrCode(qrCode: string): {
     );
   }
   const values = encodedValues.split("|");
-  const [accessKey, version, environment, cscIdentifier, hash] = values;
+  const [accessKey, version, environment] = values;
+  const isContingency = values.length === 8;
+  const cscIdentifier = isContingency ? values[6] : values[3];
+  const hash = isContingency ? values[7] : values[4];
   if (
     !accessKey ||
     !version ||
     !environment ||
     !cscIdentifier ||
     !hash ||
-    values.length < 5 ||
+    values.length !== (isContingency ? 8 : 5) ||
     !/^\d{44}$/.test(accessKey) ||
     !accessKey.startsWith("23") ||
     !/^\d{1,2}$/.test(version) ||
     !["1", "2"].includes(environment) ||
     !/^\d{1,10}$/.test(cscIdentifier) ||
-    !/^[a-f\d]{40}$/i.test(hash)
+    !/^[a-f\d]{40}$/i.test(hash) ||
+    (isContingency &&
+      (accessKey[34] !== "9" ||
+        version !== "2" ||
+        !/^\d{2}$/.test(values[3] ?? "") ||
+        !/^\d{1,12}\.\d{2}$/.test(values[4] ?? "") ||
+        !/^[a-f\d]{56}$/i.test(values[5] ?? "")))
   ) {
     throw new ProviderError(
       400,
@@ -428,6 +440,13 @@ function parseSefazCeQrCode(qrCode: string): {
     tipo_ambiente: environment,
     identificador_csc: cscIdentifier,
     codigo_hash: hash,
+    ...(isContingency
+      ? {
+          dia_data_emissao: values[3],
+          valor_total_nfce: values[4],
+          digVal: values[5],
+        }
+      : {}),
   };
 }
 

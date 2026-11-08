@@ -258,6 +258,100 @@ test("looks up Ceará NFC-e directly and parses SEFAZ response data", async () =
   ]);
 });
 
+test("looks up offline-contingency Ceará NFC-e QR codes", async () => {
+  const requests: { body: unknown }[] = [];
+  const service = new ReceiptImportService(
+    parseConfig({}),
+    async (_input, init) => {
+      requests.push({ body: JSON.parse(String(init?.body)) });
+      return new Response(
+        JSON.stringify({
+          xml: `
+            <div class="txtTopo">MERCADO</div>
+            <div>Emissão: 05/11/2026</div>
+            <tr id="Item1">
+              <span class="txtTit">Produto</span>
+              <span class="valor">275,46</span>
+            </tr>`,
+        }),
+      );
+    },
+  );
+  const qrCode =
+    "https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html?p=23261103995515024180650070000328319009916539%7C2%7C1%7C05%7C275.46%7C702b61565a62447061534c6c45674f35345a45696c7546654d72553d%7C1%7Cef1a5887bc31a9d054ef835cbfdcb8f8c4d1e382";
+
+  assert.deepEqual(await service.readNfce(qrCode), {
+    success: true,
+    market: "MERCADO",
+    date: "05/11/2026",
+    receiptIdentifier: "23261103995515024180650070000328319009916539",
+    items: [{ product: "Produto", value: 275.46 }],
+  });
+  assert.deepEqual(requests, [
+    {
+      body: {
+        chave_acesso: "23261103995515024180650070000328319009916539",
+        versao_qrcode: "2",
+        tipo_ambiente: "1",
+        dia_data_emissao: "05",
+        valor_total_nfce: "275.46",
+        digVal: "702b61565a62447061534c6c45674f35345a45696c7546654d72553d",
+        identificador_csc: "1",
+        codigo_hash: "ef1a5887bc31a9d054ef835cbfdcb8f8c4d1e382",
+      },
+    },
+  ]);
+});
+
+test("looks up offline-contingency QR codes from the nfceh Ceará host", async () => {
+  const requests: { url: string; body: unknown }[] = [];
+  const service = new ReceiptImportService(
+    parseConfig({}),
+    async (input, init) => {
+      requests.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(
+        JSON.stringify({
+          xml: `
+            <div class="txtTopo">MERCADO</div>
+            <div>Emissão: 04/11/2026</div>
+            <tr id="Item1">
+              <span class="txtTit">Produto</span>
+              <span class="valor">84,64</span>
+            </tr>`,
+        }),
+      );
+    },
+  );
+  const qrCode =
+    "https://nfceh.sefaz.ce.gov.br/pages/ShowNFCe.html?p=23261104971531000182652170000778559420955569%7C2%7C1%7C03%7C84.64%7C464662785454336273534b70657243787a587a3476787a4a4841593d%7C2%7Ca07ab0f1961d19fc1a91263e061c370dbbb349e9";
+
+  assert.deepEqual(await service.readNfce(qrCode), {
+    success: true,
+    market: "MERCADO",
+    date: "04/11/2026",
+    receiptIdentifier: "23261104971531000182652170000778559420955569",
+    items: [{ product: "Produto", value: 84.64 }],
+  });
+  assert.deepEqual(requests, [
+    {
+      url: "http://nfce.sefaz.ce.gov.br/nfce/api/notasFiscal/qrcodev2/",
+      body: {
+        chave_acesso: "23261104971531000182652170000778559420955569",
+        versao_qrcode: "2",
+        tipo_ambiente: "1",
+        dia_data_emissao: "03",
+        valor_total_nfce: "84.64",
+        digVal: "464662785454336273534b70657243787a587a3476787a4a4841593d",
+        identificador_csc: "2",
+        codigo_hash: "a07ab0f1961d19fc1a91263e061c370dbbb349e9",
+      },
+    },
+  ]);
+});
+
 test("accepts legacy HTTP and official Ceará SEFAZ subdomains in QR URLs", async () => {
   const service = new ReceiptImportService(
     parseConfig({}),

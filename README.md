@@ -117,7 +117,8 @@ for another request is rejected.
 The NFC-e QR reader decodes the code in the browser and the API directly
 queries the official Ceará SEFAZ NFC-e endpoint. It accepts QR URLs hosted at
 `nfce.sefaz.ce.gov.br` whose access key is for Ceará (state code `23`); other
-states are reported as unsupported. The API posts only the validated QR
+states are reported as unsupported. Both online QR codes and offline
+contingency QR codes are supported. The API validates and posts the QR
 parameters to the fixed SEFAZ endpoint, parses the returned receipt data, and
 does not need an Apps Script URL. The Ceará endpoint currently requires HTTP,
 so the QR payload is not encrypted in transit to that government host.
