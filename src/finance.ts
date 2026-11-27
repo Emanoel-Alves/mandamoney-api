@@ -7,16 +7,19 @@ import {
   type AuthService,
   type AuthenticatedUser,
 } from "./auth.js";
+import { normalizeProductName } from "./categories.js";
 import {
   collectionNames,
   type BalanceAdjustmentDocument,
   type BalanceDocument,
   type BalanceItemDocument,
   type BalanceStatus,
+  type CategoryDocument,
   type DisputeDocument,
   type IdempotencyDocument,
   type ItemDocument,
   type PaymentRequestDocument,
+  type ProductCategoryMappingDocument,
   type UserDocument,
 } from "./models.js";
 import type { PushMessage, PushNotificationSender } from "./push.js";
@@ -55,6 +58,17 @@ type PushEvent = { userId: string; message: PushMessage };
 
 type UserNames = Map<string, string>;
 
+export type MonthlyCategoryTotal = {
+  month: string;
+  totalCents: number;
+  categories: {
+    id: string;
+    name: string;
+    color: string;
+    amountCents: number;
+  }[];
+};
+
 export class FinanceService {
   constructor(
     private readonly database: Database,
@@ -65,34 +79,41 @@ export class FinanceService {
   async bootstrap(userId: string, month: string): Promise<unknown> {
     validateMonth(month);
     const db = await this.database.connect();
-    const [user, itemsPage, balances, paymentRequests, disputes] =
-      await Promise.all([
-        db
-          .collection<UserDocument>(collectionNames.users)
-          .findOne({ _id: userId }, { projection: { _id: 1, name: 1 } }),
-        this.findItemsForMonth(db, month),
-        db
-          .collection<BalanceDocument>(collectionNames.balances)
-          .find({
-            $or: [{ debtorId: userId }, { creditorId: userId }],
-          })
-          .sort({ updatedAt: -1, _id: -1 })
-          .toArray(),
-        db
-          .collection<PaymentRequestDocument>(collectionNames.paymentRequests)
-          .find({
-            creditorId: userId,
-            status: "pending",
-          })
-          .toArray(),
-        db
-          .collection<DisputeDocument>(collectionNames.disputes)
-          .find({
-            creditorId: userId,
-            status: "pending",
-          })
-          .toArray(),
-      ]);
+    const [
+      user,
+      itemsPage,
+      balances,
+      paymentRequests,
+      disputes,
+      monthlyCategoryTotals,
+    ] = await Promise.all([
+      db
+        .collection<UserDocument>(collectionNames.users)
+        .findOne({ _id: userId }, { projection: { _id: 1, name: 1 } }),
+      this.findItemsForMonth(db, month),
+      db
+        .collection<BalanceDocument>(collectionNames.balances)
+        .find({
+          $or: [{ debtorId: userId }, { creditorId: userId }],
+        })
+        .sort({ updatedAt: -1, _id: -1 })
+        .toArray(),
+      db
+        .collection<PaymentRequestDocument>(collectionNames.paymentRequests)
+        .find({
+          creditorId: userId,
+          status: "pending",
+        })
+        .toArray(),
+      db
+        .collection<DisputeDocument>(collectionNames.disputes)
+        .find({
+          creditorId: userId,
+          status: "pending",
+        })
+        .toArray(),
+      this.findMonthlyCategoryTotals(db, month),
+    ]);
     if (!user) throw new FinanceError(404, "NOT_FOUND", "User not found.");
     const accumulatedPurchases = await this.findAccumulatedPurchases(
       db,
@@ -109,6 +130,7 @@ export class FinanceService {
       itemsNextCursor: itemsPage.nextCursor,
       balances: balances.map((balance) => serializeBalance(balance, names)),
       accumulatedPurchases,
+      monthlyCategoryTotals,
       notifications: {
         paymentRequests: paymentRequests.length,
         disputes: disputes.length,
@@ -1030,6 +1052,41 @@ export class FinanceService {
     };
   }
 
+  private async findMonthlyCategoryTotals(
+    db: Db,
+    throughMonth: string,
+  ): Promise<MonthlyCategoryTotal[]> {
+    const months = recentMonths(throughMonth, 6);
+    const startDate = `${months[0]}-01`;
+    const endDate = nextMonthStart(throughMonth);
+    const [items, categories] = await Promise.all([
+      db
+        .collection<ItemDocument>(collectionNames.items)
+        .find({ date: { $gte: startDate, $lt: endDate } })
+        .project<
+          Pick<ItemDocument, "date" | "product" | "category" | "amountCents">
+        >({ date: 1, product: 1, category: 1, amountCents: 1 })
+        .toArray(),
+      db
+        .collection<CategoryDocument>(collectionNames.categories)
+        .find()
+        .toArray(),
+    ]);
+    const normalizedProducts = [
+      ...new Set(items.map((item) => normalizeProductName(item.product))),
+    ].filter(Boolean);
+    const mappings = normalizedProducts.length
+      ? await db
+          .collection<ProductCategoryMappingDocument>(
+            collectionNames.productCategoryMappings,
+          )
+          .find({ _id: { $in: normalizedProducts } })
+          .toArray()
+      : [];
+
+    return aggregateMonthlyCategoryTotals(items, categories, mappings, months);
+  }
+
   private async findAccumulatedPurchases(
     db: Db,
     balances: BalanceDocument[],
@@ -1318,6 +1375,80 @@ function nextMonthStart(month: string): string {
   return number === 12
     ? `${year + 1}-01-01`
     : `${year}-${String(number + 1).padStart(2, "0")}-01`;
+}
+
+function recentMonths(throughMonth: string, count: number): string[] {
+  const [yearText, monthText] = throughMonth.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(Date.UTC(year, month - count + index, 1));
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+  });
+}
+
+export function aggregateMonthlyCategoryTotals(
+  items: Pick<ItemDocument, "date" | "product" | "category" | "amountCents">[],
+  categories: CategoryDocument[],
+  mappings: ProductCategoryMappingDocument[],
+  months: string[],
+): MonthlyCategoryTotal[] {
+  type CategoryTotal = MonthlyCategoryTotal["categories"][number];
+  const categoriesById = new Map(
+    categories.map((category) => [category._id, category]),
+  );
+  const categoriesByName = new Map(
+    categories.map((category) => [
+      normalizeProductName(category.name),
+      category,
+    ]),
+  );
+  const mappingsByProduct = new Map(
+    mappings.map((mapping) => [mapping.normalizedProduct, mapping]),
+  );
+  const defaultCategory = categoriesByName.get("outros") ?? categories[0];
+  const totalsByMonth = new Map(
+    months.map((month) => [month, new Map<string, CategoryTotal>()]),
+  );
+
+  for (const item of items) {
+    const month = item.date.slice(0, 7);
+    const monthTotals = totalsByMonth.get(month);
+    if (!monthTotals) continue;
+
+    const mapping = mappingsByProduct.get(normalizeProductName(item.product));
+    const category =
+      (mapping ? categoriesById.get(mapping.categoryId) : undefined) ??
+      categoriesByName.get(normalizeProductName(item.category)) ??
+      defaultCategory;
+    const categoryTotal: CategoryTotal = {
+      id: category?._id ?? "uncategorized",
+      name: category?.name ?? "Outros",
+      color: category?.color ?? "#a99f92",
+      amountCents: 0,
+    };
+    const existing = monthTotals.get(categoryTotal.id);
+    if (existing) {
+      existing.amountCents += item.amountCents;
+    } else {
+      categoryTotal.amountCents = item.amountCents;
+      monthTotals.set(categoryTotal.id, categoryTotal);
+    }
+  }
+
+  return months.map((month) => {
+    const monthlyCategories = [
+      ...(totalsByMonth.get(month)?.values() ?? []),
+    ].sort((left, right) => left.name.localeCompare(right.name));
+    return {
+      month,
+      totalCents: monthlyCategories.reduce(
+        (total, category) => total + category.amountCents,
+        0,
+      ),
+      categories: monthlyCategories,
+    };
+  });
 }
 
 export type FinanceApi = Pick<

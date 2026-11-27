@@ -9,6 +9,7 @@ import {
   calculateItemDebts,
   calculateDisputeResult,
   calculateOffset,
+  aggregateMonthlyCategoryTotals,
   FinanceError,
   findOpenPurchaseMonths,
   type FinanceApi,
@@ -19,8 +20,10 @@ import type {
   BalanceAdjustmentDocument,
   BalanceDocument,
   BalanceItemDocument,
+  CategoryDocument,
   DisputeDocument,
   ItemDocument,
+  ProductCategoryMappingDocument,
 } from "./models.js";
 
 const accessToken = "a".repeat(43);
@@ -34,6 +37,7 @@ function buildFinanceApi(calls: unknown[][] = []): FinanceApi {
         user: { id: userId, name: "Test" },
         items: [],
         balances: [],
+        monthlyCategoryTotals: [],
         notifications: { paymentRequests: 0, disputes: 0 },
       };
     },
@@ -96,6 +100,116 @@ function buildFinanceApi(calls: unknown[][] = []): FinanceApi {
     },
   };
 }
+
+test("aggregates monthly purchases using product mappings and preserves empty months", () => {
+  const timestamp = new Date("2026-01-01T00:00:00.000Z");
+  const categories: CategoryDocument[] = [
+    {
+      _id: "food",
+      name: "Alimentos",
+      normalizedName: "alimentos",
+      color: "#6ca66b",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      _id: "meat",
+      name: "Carnes",
+      normalizedName: "carnes",
+      color: "#d96c55",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      _id: "other",
+      name: "Outros",
+      normalizedName: "outros",
+      color: "#a99f92",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ];
+  const mappings: ProductCategoryMappingDocument[] = [
+    {
+      _id: "cafe torrado",
+      product: "Café Torrado",
+      normalizedProduct: "cafe torrado",
+      categoryId: "food",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ];
+  const items: Pick<
+    ItemDocument,
+    "date" | "product" | "category" | "amountCents"
+  >[] = [
+    {
+      date: "2026-03-12",
+      product: "Café Torrado",
+      category: "Carnes",
+      amountCents: 1000,
+    },
+    {
+      date: "2026-03-13",
+      product: "Carne",
+      category: "Carnes",
+      amountCents: 250,
+    },
+    {
+      date: "2026-04-04",
+      product: "Item sem categoria",
+      category: "Categoria removida",
+      amountCents: 75,
+    },
+    {
+      date: "2026-02-28",
+      product: "Fora do período",
+      category: "Alimentos",
+      amountCents: 999,
+    },
+  ];
+
+  assert.deepEqual(
+    aggregateMonthlyCategoryTotals(items, categories, mappings, [
+      "2026-03",
+      "2026-04",
+      "2026-05",
+    ]),
+    [
+      {
+        month: "2026-03",
+        totalCents: 1250,
+        categories: [
+          {
+            id: "food",
+            name: "Alimentos",
+            color: "#6ca66b",
+            amountCents: 1000,
+          },
+          {
+            id: "meat",
+            name: "Carnes",
+            color: "#d96c55",
+            amountCents: 250,
+          },
+        ],
+      },
+      {
+        month: "2026-04",
+        totalCents: 75,
+        categories: [
+          {
+            id: "other",
+            name: "Outros",
+            color: "#a99f92",
+            amountCents: 75,
+          },
+        ],
+      },
+      { month: "2026-05", totalCents: 0, categories: [] },
+    ],
+  );
+});
 
 function buildAuth(): AuthService {
   const store: AuthStore = {
