@@ -135,9 +135,12 @@ API for processing.
 Every multi-document finance write uses MongoDB transactions. The selected
 Atlas deployment must support transactions (a replica set/sharded cluster);
 operations fail instead of falling back to non-atomic writes. Conditional state
-updates, a partial unique index for one pending balance per directed pair, and
-idempotency records protect concurrent retries. Validate the actual Atlas
-cluster and concurrent requests in staging before launch.
+updates and idempotency records protect concurrent retries. Multiple pending
+balances can exist for a directed pair when a balance reopens after a
+contestation while later purchases already have their own balance; each record
+keeps its item-level history. Startup removes the legacy unique index that
+prevented this transition. Validate the actual Atlas cluster and concurrent
+requests in staging before launch.
 
 Run `npm run test:atlas` only against a development/test database configured
 in the API `.env`. It uses UUID-scoped temporary users, items, balances, and

@@ -1,4 +1,4 @@
-import type { Db, IndexDescription } from "mongodb";
+import { MongoServerError, type Db, type IndexDescription } from "mongodb";
 
 export type UserDocument = {
   _id: string;
@@ -181,12 +181,6 @@ export const indexes: Record<keyof typeof collectionNames, IndexDescription[]> =
       },
       { key: { debtorId: 1, status: 1 }, name: "balances_debtor_status" },
       { key: { creditorId: 1, status: 1 }, name: "balances_creditor_status" },
-      {
-        key: { debtorId: 1, creditorId: 1 },
-        unique: true,
-        partialFilterExpression: { status: "pending" },
-        name: "balances_one_pending_per_pair",
-      },
     ],
     balanceItems: [
       { key: { balanceId: 1, itemId: 1 }, name: "balance_items_balance_item" },
@@ -281,6 +275,27 @@ export const indexes: Record<keyof typeof collectionNames, IndexDescription[]> =
   };
 
 export async function ensureIndexes(db: Db): Promise<void> {
+  const balances = db.collection(collectionNames.balances);
+  const hasBalancesCollection = await db
+    .listCollections({ name: collectionNames.balances }, { nameOnly: true })
+    .hasNext();
+  if (hasBalancesCollection) {
+    const balanceIndexes = await balances.listIndexes().toArray();
+    if (
+      balanceIndexes.some(
+        (index) => index.name === "balances_one_pending_per_pair",
+      )
+    ) {
+      try {
+        await balances.dropIndex("balances_one_pending_per_pair");
+      } catch (error) {
+        if (!(error instanceof MongoServerError) || error.code !== 27) {
+          throw error;
+        }
+      }
+    }
+  }
+
   await Promise.all(
     Object.entries(collectionNames).map(async ([key, collectionName]) => {
       const definitions = indexes[key as keyof typeof collectionNames];

@@ -381,6 +381,71 @@ test(
         [[disputeId, "accepted"]],
       );
 
+      const rejectedBatchKey = `rejected-item-${marker}`;
+      rememberIdempotency(ids, buyerId, rejectedBatchKey);
+      const rejectedBatch = await finance.saveItems(buyerId, rejectedBatchKey, [
+        {
+          ...itemInput,
+          product: `Rejected temporary ${marker}`,
+          valueCents: 900,
+        },
+      ]);
+      const rejectedBatchBody = rejectedBatch.body as {
+        items: { id: string }[];
+        balanceIds: string[];
+      };
+      const rejectedItemId = rejectedBatchBody.items[0]?.id;
+      const rejectedBalanceId = rejectedBatchBody.balanceIds[0];
+      assert.ok(rejectedItemId && rejectedBalanceId);
+      ids.items.push(rejectedItemId);
+      ids.balances.push(rejectedBalanceId);
+
+      const createRejectedKey = `create-rejected-dispute-${marker}`;
+      rememberIdempotency(ids, debtorId, createRejectedKey);
+      const rejectedDisputeResult = await finance.createDispute(
+        debtorId,
+        rejectedBalanceId,
+        rejectedItemId,
+        createRejectedKey,
+      );
+      const rejectedDisputeId = (
+        rejectedDisputeResult.body as { dispute: { id: string } }
+      ).dispute.id;
+      ids.disputes.push(rejectedDisputeId);
+
+      const followUpBatchKey = `follow-up-item-${marker}`;
+      rememberIdempotency(ids, buyerId, followUpBatchKey);
+      const followUpBatch = await finance.saveItems(buyerId, followUpBatchKey, [
+        {
+          ...itemInput,
+          product: `Follow-up temporary ${marker}`,
+          valueCents: 600,
+        },
+      ]);
+      const followUpBalanceId = (followUpBatch.body as { balanceIds: string[] })
+        .balanceIds[0];
+      assert.ok(followUpBalanceId);
+      ids.balances.push(followUpBalanceId);
+
+      const rejectDisputeKey = `reject-dispute-${marker}`;
+      rememberIdempotency(ids, buyerId, rejectDisputeKey);
+      const rejectedDispute = await finance.resolveDispute(
+        buyerId,
+        rejectedDisputeId,
+        "rejected",
+        rejectDisputeKey,
+      );
+      assert.equal(rejectedDispute.statusCode, 200);
+      const pendingPairBalances = await db
+        .collection<BalanceDocument>(collectionNames.balances)
+        .find({
+          debtorId,
+          creditorId: buyerId,
+          status: "pending",
+        })
+        .toArray();
+      assert.equal(pendingPairBalances.length, 2);
+
       const offsetBalances: BalanceDocument[] = [
         {
           _id: `atlas-test-${marker}-offset-a`,
